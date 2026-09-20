@@ -5,6 +5,7 @@ from arq.connections import RedisSettings
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from worker.jobs.analyze import analyze_pr
 from worker.jobs.db_ping import db_ping
 from worker.jobs.ping import ping
 
@@ -25,7 +26,7 @@ settings = Settings()
 class WorkerSettings:
     """ARQ worker entrypoint config. Real analysis jobs are registered here in Stage 3."""
 
-    functions = [ping, db_ping]
+    functions = [ping, db_ping, analyze_pr]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
 
     @staticmethod

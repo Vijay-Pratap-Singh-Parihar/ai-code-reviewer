@@ -7,9 +7,9 @@ from sqlalchemy import ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from api.db.base import Base
-from api.models._enum import pg_enum
-from api.models.mixins import TZDateTime, UUIDPrimaryKeyMixin
+from db._enum import pg_enum
+from db.base import Base
+from db.mixins import TZDateTime, UUIDPrimaryKeyMixin
 
 
 class PullRequestState(enum.StrEnum):

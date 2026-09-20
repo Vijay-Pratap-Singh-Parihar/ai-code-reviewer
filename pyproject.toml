@@ -9,7 +9,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/worker", "packages/engine"]
+members = ["apps/api", "apps/worker", "packages/engine", "packages/db"]
 
 [dependency-groups]
 dev = [
@@ -42,4 +42,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "--import-mode=importlib"
-testpaths = ["apps/api/tests", "apps/worker/tests", "packages/engine/tests"]
+testpaths = ["apps/api/tests", "apps/worker/tests", "packages/engine/tests", "packages/db/tests"]

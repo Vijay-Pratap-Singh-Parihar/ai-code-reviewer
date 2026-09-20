@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 
 import pytest
-from api.models.organization import Organization, OrgPlan, User, UserRole
-from api.models.provider import AIProvider, ModelRoute, ModelTier, ProviderKind
+from db.organization import Organization, OrgPlan, User, UserRole
+from db.provider import AIProvider, ModelRoute, ModelTier, ProviderKind
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -54,7 +54,7 @@ def test_deleting_organization_cascades_to_users(db_session: Session) -> None:
 
 
 def test_repository_config_json_roundtrips_as_dict(db_session: Session) -> None:
-    from api.models.repository import Repository
+    from db.repository import Repository
 
     org = _make_org(db_session)
     repo = Repository(

@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 30
 
+    # Model used by the Stage 3 diff-only reviewer. Snapshotted onto each
+    # AnalysisRun.config_snapshot at enqueue time, so a run always records
+    # exactly which model produced it regardless of later config changes.
+    revu_model_review: str = "claude-sonnet-5"
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

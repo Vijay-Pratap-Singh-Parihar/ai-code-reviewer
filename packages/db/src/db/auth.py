@@ -5,8 +5,8 @@ from sqlalchemy import ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from api.db.base import Base
-from api.models.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
+from db.base import Base
+from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
 
 
 class RefreshToken(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

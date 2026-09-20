@@ -2,6 +2,8 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from db.auth import RefreshToken
+from db.organization import Organization, User, UserRole
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,8 +15,6 @@ from api.core.security import (
     hash_refresh_token,
     verify_password,
 )
-from api.models.auth import RefreshToken
-from api.models.organization import Organization, User, UserRole
 
 settings = get_settings()
 

@@ -4,8 +4,8 @@ from sqlalchemy import Boolean, ForeignKey, String
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from api.db.base import Base
-from api.models.mixins import CreatedAtMixin, UUIDPrimaryKeyMixin
+from db.base import Base
+from db.mixins import CreatedAtMixin, UUIDPrimaryKeyMixin
 
 
 class Repository(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

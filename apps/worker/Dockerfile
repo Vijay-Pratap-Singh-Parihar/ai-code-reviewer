@@ -10,6 +10,7 @@ WORKDIR /workspace
 
 COPY pyproject.toml uv.lock* ./
 COPY packages/engine ./packages/engine
+COPY packages/db ./packages/db
 COPY apps/worker ./apps/worker
 
 ENV UV_PROJECT_ENVIRONMENT=/workspace/.venv
