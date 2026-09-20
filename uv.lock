@@ -6,6 +6,7 @@ requires-python = "==3.12.*"
 members = [
     "ai-code-reviewer",
     "api",
+    "db",
     "revu",
     "worker",
 ]
@@ -150,6 +151,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "bcrypt" },
     { name = "cryptography" },
+    { name = "db" },
     { name = "fastapi" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic", extra = ["email"] },
@@ -167,6 +169,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "bcrypt", specifier = ">=4.2.1" },
     { name = "cryptography", specifier = ">=43.0.3" },
+    { name = "db", editable = "packages/db" },
     { name = "fastapi", specifier = ">=0.115.5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.3" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.9.2" },
@@ -475,6 +478,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/63/8e/f1f955e0921dd2b6d22eae7e8d24a4c4b638d10735ffbf6a71f99eb0fcb8/cryptography-50.0.1-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:fd3718b960d0b5dd213cdf03f3bcb7000e69dda0de8b956061947ff6bcff5558", size = 4888413, upload-time = "2026-08-25T19:45:20.4Z" },
     { url = "https://files.pythonhosted.org/packages/1f/ab/89e2b798d2c3925f82e2bb72d5979f3d2f6da2dd22ef4a8cd8b70d920039/cryptography-50.0.1-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:2a93d05e34d5f67fba6f891fe85d929999baa7195e853923ea6d7576c9e68c5e", size = 5044355, upload-time = "2026-08-25T19:45:22.353Z" },
     { url = "https://files.pythonhosted.org/packages/99/89/87ef49ffe383ef4e147d27b7bf2088fb0b54ea409dd87b5a89442e5828a5/cryptography-50.0.1-cp39-abi3-win_amd64.whl", hash = "sha256:55d16b1ef3ee0958d893a977b19777887e546c9954ea81b200c3301a864013f2", size = 3875429, upload-time = "2026-08-25T19:45:24.418Z" },
+]
+
+[[package]]
+name = "db"
+version = "0.1.0"
+source = { editable = "packages/db" }
+dependencies = [
+    { name = "revu" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "revu", editable = "packages/engine" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
 ]
 
 [[package]]
@@ -1759,6 +1777,7 @@ source = { editable = "apps/worker" }
 dependencies = [
     { name = "arq" },
     { name = "asyncpg" },
+    { name = "db" },
     { name = "pydantic-settings" },
     { name = "revu" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -1768,6 +1787,7 @@ dependencies = [
 requires-dist = [
     { name = "arq", specifier = ">=0.26.1" },
     { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "db", editable = "packages/db" },
     { name = "pydantic-settings", specifier = ">=2.6.1" },
     { name = "revu", editable = "packages/engine" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },

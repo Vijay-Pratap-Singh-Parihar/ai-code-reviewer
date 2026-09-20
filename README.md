@@ -7,14 +7,16 @@ app-first reorder of [`Execution_Roadmap_Weeks_0_to_18.md`](Execution_Roadmap_We
 ## Layout
 
 ```
-apps/api/       FastAPI application (auth, routers, DB models, Alembic migrations)
-apps/worker/    ARQ background worker (runs analysis jobs against the engine)
-apps/web/       Next.js frontend
-packages/engine/ "revu" — the review engine: indexer, context retrieval, agents, verifier
+apps/api/        FastAPI application (auth, analysis trigger, routers, Alembic migrations)
+apps/worker/     ARQ background worker (runs analysis jobs against the engine)
+apps/web/        Next.js frontend
+packages/engine/ "revu" — the review engine: providers, agents, indexer, context, verifier
+packages/db/     "db" — shared SQLAlchemy models + declarative Base
 ```
 
-`apps/api` and `apps/worker` both depend on `packages/engine` as a local uv workspace member,
-so engine code is written once and shared by both.
+`apps/api` and `apps/worker` both depend on `packages/engine` (`revu`) and `packages/db` (`db`)
+as local uv workspace members, so engine code and the data model are each written once and
+shared by both — neither app depends on the other.
 
 ## Prerequisites
 
@@ -29,7 +31,10 @@ cp .env.example .env
 ```
 
 Fill in at minimum `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` before the reviewer can make real LLM
-calls (Stage 3+). Everything else has a working development default. Generate real secrets for
+calls. Provider/model config is env-based for now (`REVU_MODEL_REVIEW`) rather than the DB-backed
+per-org `ai_providers`/`model_routes` design the schema already supports — that lands once the
+Next.js frontend has a screen to manage encrypted credentials through (see `IMPLEMENTATION_PLAN.md`
+Stage 3). Everything else has a working development default. Generate real secrets for
 `JWT_SECRET_KEY` and `CREDENTIAL_ENCRYPTION_KEY` before this ever runs anywhere but your laptop —
 the commands to generate them are commented next to each variable in `.env.example`.
 
@@ -52,7 +57,7 @@ docker compose up --build
 uv sync --all-packages --group dev
 uv run pytest
 uv run ruff check .
-uv run mypy packages/engine/src apps/api/src apps/worker/src
+uv run mypy packages/engine/src packages/db/src apps/api/src apps/worker/src
 
 # Run the API directly
 uv run --package api uvicorn api.main:app --reload --app-dir apps/api/src
@@ -98,6 +103,29 @@ docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "CREATE DATABASE
 
 CI runs a disposable `postgres:16-alpine` service container for this instead (see
 `.github/workflows/ci.yml`), so these tests also run on every push.
+
+## Triggering an analysis
+
+There's no GitHub integration yet (Stage 10), so a caller supplies the diff directly:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"org_name":"Acme Inc","email":"me@example.com","password":"correct-horse-battery"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+RUN_ID=$(curl -s -X POST http://localhost:8000/analysis \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/widgets","head_sha":"abc1234","pr_number":1,
+       "pr_title":"Fix off-by-one","diff":"--- a/app.py\n+++ b/app.py\n..."}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+curl -s http://localhost:8000/analysis/$RUN_ID -H "Authorization: Bearer $TOKEN"
+```
+
+`repositories.full_name` is globally unique across the whole system (it models a real GitHub
+repo, connectable to only one org's installation) — a second org posting the same
+`repo_full_name` gets `409 Conflict`, not a silently misattributed run.
 
 ## Status
 

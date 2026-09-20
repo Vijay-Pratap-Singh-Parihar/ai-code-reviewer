@@ -1,8 +1,7 @@
 import uuid
 
+from db.organization import UserRole
 from pydantic import BaseModel, EmailStr, Field
-
-from api.models.organization import UserRole
 
 
 class SignupRequest(BaseModel):

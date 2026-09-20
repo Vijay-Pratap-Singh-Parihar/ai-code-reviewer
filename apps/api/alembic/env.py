@@ -1,9 +1,9 @@
 from logging.config import fileConfig
 
-import api.models  # noqa: F401  (registers all models on Base.metadata)
+import db as _db_models  # noqa: F401  (registers all models on Base.metadata)
 from alembic import context
 from api.core.config import get_settings
-from api.db.base import Base
+from db.base import Base
 from sqlalchemy import engine_from_config, pool
 
 config = context.config

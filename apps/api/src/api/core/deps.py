@@ -1,12 +1,14 @@
 from typing import Annotated
 
+from arq import ArqRedis
+from db.organization import User
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.queue import get_redis_pool
 from api.core.security import InvalidTokenError, decode_access_token
 from api.db.session import get_db
-from api.models.organization import User
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -31,3 +33,4 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+RedisPool = Annotated[ArqRedis, Depends(get_redis_pool)]

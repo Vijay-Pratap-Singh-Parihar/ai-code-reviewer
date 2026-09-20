@@ -11,6 +11,7 @@ WORKDIR /workspace
 # Copy the whole workspace (workspace members reference each other via uv.sources)
 COPY pyproject.toml uv.lock* ./
 COPY packages/engine ./packages/engine
+COPY packages/db ./packages/db
 COPY apps/api ./apps/api
 
 ENV UV_PROJECT_ENVIRONMENT=/workspace/.venv

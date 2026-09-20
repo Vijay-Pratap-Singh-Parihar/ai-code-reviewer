@@ -5,8 +5,8 @@ from sqlalchemy import ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from api.db.base import Base
-from api.models.mixins import TZDateTime, UUIDPrimaryKeyMixin
+from db.base import Base
+from db.mixins import TZDateTime, UUIDPrimaryKeyMixin
 
 
 class TokenUsageLedger(UUIDPrimaryKeyMixin, Base):

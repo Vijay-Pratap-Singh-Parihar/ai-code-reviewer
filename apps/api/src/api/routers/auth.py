@@ -1,12 +1,12 @@
 from typing import Annotated
 
+from db.organization import User
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
 from api.core.deps import CurrentUser
 from api.db.session import get_db
-from api.models.organization import User
 from api.schemas.auth import AccessTokenResponse, LoginRequest, SignupRequest, UserPublic
 from api.services import auth as auth_service
 
