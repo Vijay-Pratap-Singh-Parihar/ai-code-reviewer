@@ -1,0 +1,45 @@
+[project]
+name = "ai-code-reviewer"
+version = "0.1.0"
+description = "Agentic code review platform — workspace root"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["apps/api", "apps/worker", "packages/engine"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.7.4",
+    "mypy>=1.13.0",
+    "httpx>=0.27.2",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["apps/web", "apps/api/alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+exclude = ["tests/", "alembic/"]
+
+[[tool.mypy.overrides]]
+module = ["litellm.*", "rustworkx.*", "tree_sitter.*", "tree_sitter_python.*", "arq.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--import-mode=importlib"
+testpaths = ["apps/api/tests", "apps/worker/tests", "packages/engine/tests"]
