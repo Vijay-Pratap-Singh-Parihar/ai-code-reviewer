@@ -10,34 +10,18 @@ from sqlalchemy.orm import selectinload
 
 from api.core.config import get_settings
 from api.schemas.analysis import AnalysisRequest
+from api.services.repositories import RepositoryOwnedByAnotherOrgError, get_or_create_repository
 
 settings = get_settings()
 
+# Re-exported for backward compatibility: this module used to define both of
+# these itself (Stage 3); they moved to `api.services.repositories` in Stage 5
+# so `api.services.branch_index` could share them without importing this
+# module's analysis-specific pull-request logic. Existing callers/tests that
+# import `RepositoryOwnedByAnotherOrgError` from here still work unchanged.
+__all__ = ["RepositoryOwnedByAnotherOrgError", "create_analysis_run", "get_run_for_org"]
 
-class RepositoryOwnedByAnotherOrgError(Exception):
-    """`repositories.full_name` is globally unique because in the real
-    GitHub App model (Stage 10), a given repo can only be connected to one
-    org's installation. Until then, this ad-hoc endpoint has no GitHub
-    verification to enforce that naturally, so it must be checked explicitly
-    — silently reusing another org's row would misattribute the run in a way
-    that's invisible until the caller tries to fetch it back and gets a
-    confusing 404.
-    """
-
-
-async def _get_or_create_repository(
-    session: AsyncSession, *, org_id: uuid.UUID, full_name: str
-) -> Repository:
-    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name))
-    if repo is not None:
-        if repo.org_id != org_id:
-            raise RepositoryOwnedByAnotherOrgError(full_name)
-        return repo
-
-    repo = Repository(org_id=org_id, full_name=full_name)
-    session.add(repo)
-    await session.flush()
-    return repo
+_get_or_create_repository = get_or_create_repository
 
 
 async def _get_or_create_pull_request(

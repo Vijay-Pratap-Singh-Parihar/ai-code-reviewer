@@ -161,10 +161,24 @@ def _build_module_scopes(
 
 def assemble_graph(
     parsed_files: list[_ParsedFile],
+    *,
+    extra_call_edges: list[CallEdge] | None = None,
 ) -> tuple[rx.PyDiGraph, list[Symbol], list[ImportEdge], list[CallEdge], list[UnresolvedRef]]:
     """Build the full graph from already-parsed files. Split out from
     `build_index_at_path` so `incremental.py` can re-assemble the whole
     graph cheaply after only re-parsing the files that changed.
+
+    `extra_call_edges` lets a caller carry forward call edges that were
+    already resolved in a previous run and don't need (and, for files with
+    no `source` bytes available, *can't* be) re-derived by `resolve_calls`
+    here. `incremental.py` uses this for call edges whose caller lives in a
+    file that wasn't reparsed this run — see that module for why this
+    matters (a real bug found while building Stage 5: without this, every
+    incremental update silently dropped every call edge originating in an
+    unchanged file, not just ones targeting a renamed/removed symbol).
+    An edge is only kept if both its caller and callee still exist as nodes
+    in the freshly-assembled graph; one that doesn't is silently dropped,
+    matching the existing, documented behaviour for a renamed/removed target.
     """
     known_modules = {pf.module_name for pf in parsed_files}
     all_symbols_list: list[Symbol] = [s for pf in parsed_files for s in pf.symbols]
@@ -234,6 +248,15 @@ def assemble_graph(
         call_edges.extend(module_call_edges)
         unresolved.extend(call_unresolved)
         for call_edge in module_call_edges:
+            graph.add_edge(
+                node_index[call_edge.caller],
+                node_index[call_edge.callee],
+                {"kind": EdgeKind.CALLS.value, "line": call_edge.line},
+            )
+
+    for call_edge in extra_call_edges or []:
+        if call_edge.caller in node_index and call_edge.callee in node_index:
+            call_edges.append(call_edge)
             graph.add_edge(
                 node_index[call_edge.caller],
                 node_index[call_edge.callee],

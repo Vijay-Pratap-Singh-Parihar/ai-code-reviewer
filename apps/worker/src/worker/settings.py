@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from worker.jobs.analyze import analyze_pr
 from worker.jobs.db_ping import db_ping
+from worker.jobs.index_branch import update_branch_index
 from worker.jobs.ping import ping
 
 # apps/worker/src/worker/settings.py -> repo root is four levels up.
@@ -26,7 +27,7 @@ settings = Settings()
 class WorkerSettings:
     """ARQ worker entrypoint config. Real analysis jobs are registered here in Stage 3."""
 
-    functions = [ping, db_ping, analyze_pr]
+    functions = [ping, db_ping, analyze_pr, update_branch_index]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
 
     @staticmethod

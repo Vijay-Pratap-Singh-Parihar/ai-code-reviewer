@@ -19,6 +19,21 @@ re-processed too to notice its call is now unresolved. A full rebuild is
 the only way to guarantee every edge reflects the latest state everywhere;
 incremental update trades that guarantee for speed, per the roadmap's
 "good enough" philosophy for this stage.
+
+**Real bug found and fixed in Stage 5:** unchanged files are reconstructed
+as `_ParsedFile`s with `source=b""` (their symbols/imports are reused
+verbatim; there's no need to re-read the file from disk). But
+`assemble_graph` used to call `resolve_calls(pf.source, ...)` on *every*
+`_ParsedFile` it was given, including these — parsing an empty byte string
+finds zero call sites, so every call edge whose caller lived in an unchanged
+file silently disappeared on every incremental update, not just ones
+targeting a renamed/removed symbol as documented above. `assemble_graph` now
+takes an `extra_call_edges` parameter for exactly this: call edges from
+`previous_result` whose `file_path` (the caller's file, not the callee's)
+isn't in the changed set are carried forward and re-attached to the graph
+verbatim (dropped only if their caller or callee node no longer exists,
+which is the documented rename/removal case, now correctly the *only* way
+an edge disappears here).
 """
 
 from __future__ import annotations
@@ -89,6 +104,12 @@ def incremental_update(
         kept_unresolved = [
             u for u in previous_result.unresolved if u.file_path not in changed_paths
         ]
+        # `CallEdge.file_path` is the *caller's* file — a call edge survives
+        # unless the file it's made from was reparsed this run (see the
+        # module docstring's "real bug found and fixed in Stage 5" note).
+        kept_call_edges = [
+            c for c in previous_result.call_edges if c.file_path not in changed_paths
+        ]
 
         # Rebuild the `_ParsedFile` list for unchanged files from the kept
         # symbols/imports (we don't keep raw source around for unchanged
@@ -130,7 +151,9 @@ def incremental_update(
                 pf.module_name, pf.is_package_init = module_name_for_file(path_obj, source_roots)
 
         merged_parsed = [*unchanged_by_module.values(), *reparsed]
-        graph, symbols, import_edges, call_edges, call_unresolved = assemble_graph(merged_parsed)
+        graph, symbols, import_edges, call_edges, call_unresolved = assemble_graph(
+            merged_parsed, extra_call_edges=kept_call_edges
+        )
 
         duration_ms = int((time.monotonic() - start) * 1000)
         result = IndexResult(

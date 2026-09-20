@@ -78,6 +78,84 @@ def test_incremental_update_matches_full_rebuild_after_a_file_changes(tmp_path: 
     assert incremental_result.index.edge_count == full_rebuild.edge_count
 
 
+def test_incremental_update_preserves_call_edges_from_unchanged_files(tmp_path: Path) -> None:
+    """Regression test for a real Stage 5 bug: `assemble_graph` used to call
+    `resolve_calls` on every `_ParsedFile` it was given, including the
+    reconstructed-from-symbols ones for *unchanged* files (which carry
+    `source=b""`). Parsing an empty source finds zero call sites, so every
+    call edge whose caller lived in an unchanged file silently vanished on
+    every incremental update — not just ones targeting a renamed/removed
+    symbol, which is the only loss the module's docstring documents. This
+    must survive not just one incremental update but two in a row, since the
+    bug would otherwise resurface on the second pass.
+    """
+    repo = _init_repo(tmp_path)
+    repo_dir = Path(repo.working_dir)
+
+    (repo_dir / "utils.py").write_text("def helper():\n    return 1\n")
+    (repo_dir / "caller.py").write_text(
+        "from utils import helper\n\ndef use_it():\n    return helper()\n"
+    )
+    repo.index.add(["utils.py", "caller.py"])
+    sha_1 = repo.index.commit("first").hexsha
+    result_1 = build_index(repo_dir, sha_1)
+    assert ("caller.use_it", "utils.helper") in {
+        (c.caller, c.callee) for c in result_1.call_edges
+    }
+
+    # First incremental update: touch an unrelated file. caller.py is
+    # untouched, so its call edge must be carried forward, not dropped.
+    (repo_dir / "other.py").write_text("def other_fn():\n    return 42\n")
+    repo.index.add(["other.py"])
+    sha_2 = repo.index.commit("second").hexsha
+    incr_1 = incremental_update(repo_dir, sha_1, sha_2, result_1)
+    assert ("caller.use_it", "utils.helper") in {
+        (c.caller, c.callee) for c in incr_1.index.call_edges
+    }
+
+    # Second incremental update in a row, still not touching caller.py or
+    # utils.py — this is exactly the scenario the bug didn't survive.
+    (repo_dir / "other.py").write_text("def other_fn():\n    return 43\n")
+    repo.index.add(["other.py"])
+    sha_3 = repo.index.commit("third").hexsha
+    incr_2 = incremental_update(repo_dir, sha_2, sha_3, incr_1.index)
+    assert ("caller.use_it", "utils.helper") in {
+        (c.caller, c.callee) for c in incr_2.index.call_edges
+    }
+
+    full_rebuild = build_index(repo_dir, sha_3)
+    assert incr_2.index.edge_count == full_rebuild.edge_count
+
+
+def test_incremental_update_still_drops_calls_into_a_renamed_symbol(tmp_path: Path) -> None:
+    """The one call-edge loss that *is* still documented and expected: a
+    call edge surviving from an unchanged file into a symbol that a changed
+    file has since renamed away has nothing left to point at, so it's
+    dropped rather than left dangling. A full rebuild is the only way to
+    notice the caller-side file now has an unresolved call.
+    """
+    repo = _init_repo(tmp_path)
+    repo_dir = Path(repo.working_dir)
+
+    (repo_dir / "utils.py").write_text("def helper():\n    return 1\n")
+    (repo_dir / "caller.py").write_text(
+        "from utils import helper\n\ndef use_it():\n    return helper()\n"
+    )
+    repo.index.add(["utils.py", "caller.py"])
+    old_sha = repo.index.commit("first").hexsha
+    old_result = build_index(repo_dir, old_sha)
+
+    # Rename helper -> renamed_helper in utils.py; caller.py is untouched.
+    (repo_dir / "utils.py").write_text("def renamed_helper():\n    return 1\n")
+    repo.index.add(["utils.py"])
+    new_sha = repo.index.commit("second").hexsha
+
+    incremental_result = incremental_update(repo_dir, old_sha, new_sha, old_result)
+    call_pairs = {(c.caller, c.callee) for c in incremental_result.index.call_edges}
+    assert ("caller.use_it", "utils.helper") not in call_pairs
+    assert ("caller.use_it", "utils.renamed_helper") not in call_pairs
+
+
 def test_incremental_update_handles_a_deleted_file(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     repo_dir = Path(repo.working_dir)
