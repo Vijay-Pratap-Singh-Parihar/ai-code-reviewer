@@ -104,6 +104,28 @@ docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "CREATE DATABASE
 CI runs a disposable `postgres:16-alpine` service container for this instead (see
 `.github/workflows/ci.yml`), so these tests also run on every push.
 
+## Repository indexer (Stage 4)
+
+`revu.index` (`packages/engine/src/revu/index/`) builds a `rustworkx` call/import graph for a
+Python repository: `git worktree` checkout at a commit, tree-sitter symbol extraction, import and
+name-based call resolution, and an incremental update path that reparses only changed files. It's
+a plain importable library at this stage — no CLI, no API endpoint yet (see
+`IMPLEMENTATION_PLAN.md` Stage 4 for why, and Stage 5 for when that changes):
+
+```python
+from pathlib import Path
+from revu.index import build_index, build_index_at_path, incremental_update
+
+result = build_index(Path("/path/to/a/git/repo"), "abc1234")           # real commit, via git worktree
+result = build_index_at_path(Path("/any/directory"))                    # no git required
+print(result.node_count, result.edge_count, len(result.unresolved))
+```
+
+Call/import resolution is pure name-based matching with no type inference (a deliberate,
+documented limitation — see `IMPLEMENTATION_PLAN.md` Stage 4 for real accuracy numbers measured
+against this repository's own source, and why they're honestly reported as low for *this*
+repo's shape rather than massaged).
+
 ## Triggering an analysis
 
 There's no GitHub integration yet (Stage 10), so a caller supplies the diff directly:
