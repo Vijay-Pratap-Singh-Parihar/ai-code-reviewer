@@ -183,6 +183,26 @@ attempt gets its own row instead of one row mutated in place), the force-push/no
 detector, and two real bugs found and fixed while building this (one in Stage 4's incremental update,
 one a Postgres `now()` transaction-scoping gotcha).
 
+## Context / change-impact retrieval (Stage 6)
+
+`revu.context` (`packages/engine/src/revu/context/`) turns a diff + a Stage 4/5 indexed graph into a
+token-budgeted `ContextBundle` — the input Stage 7's agent will consume, not something exposed via
+an API yet. Plain importable library, same pattern as the indexer:
+
+```python
+from pathlib import Path
+from revu.context import build_context_bundle, RetrievalConfig
+from revu.index.graph import build_index_at_path
+
+graph = build_index_at_path(Path("/path/to/a/repo")).graph
+bundle = build_context_bundle(diff_text, graph, Path("/path/to/a/repo"), config=RetrievalConfig(k=2))
+print(bundle.total_tokens, [item.retrieval_reason for item in bundle.items])
+```
+
+No benchmark-driven recall curve exists in this track (see `IMPLEMENTATION_PLAN.md` Stage 6 for why)
+— it's validated instead by a hand-verified case against this repository's own real indexed graph,
+in the same spirit as Stage 4's 10 hand-verified call edges.
+
 ## Status
 
 Build order and what's covered vs. deferred from the original roadmap: see
