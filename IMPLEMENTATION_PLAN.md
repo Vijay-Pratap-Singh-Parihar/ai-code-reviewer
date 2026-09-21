@@ -21,7 +21,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 3 | Simplified reviewer: single LiteLLM call over PR title/body/diff, JSON-schema output, wrapped as a background job | Roadmap Phase 2 (`diff_only` agent), adapted | ✅ done |
 | 4 | Basic Python indexer: git worktree checkout, file walker, tree-sitter symbols, import edges, name-based call edges, `rustworkx` graph, Postgres persistence, incremental update | Roadmap Phase 3 | ✅ done |
 | 5 | Branch memory: `branch_index` / `index_update_log` tables live, staleness states, force-push → full rebuild detection, merge-base resolution (triggered via API call, not a real push webhook yet) | App Week 16 + Phase 3 incremental design | ✅ done |
-| 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | Not started |
+| 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | ✅ done |
 | 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | Not started |
 | 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | Not started |
 | 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | Not started |
@@ -465,10 +465,76 @@ running API:
 - No API endpoint surfaces `resolve_pr_merge_base` yet — correctly, per the task's instruction; it's
   a tested, importable function waiting for Stage 6 to consume it, not a feature of its own.
 
+## Stage 6 — done
+
+**Scope adaptation, stated up front:** the original Phase 4 spec calls for `eval/context_recall.py`
+and a benchmark-driven recall-vs-budget curve (`scripts/sweep_context.py --split dev`). Neither
+applies here — this track dropped the entire benchmarking harness (see "Explicitly not covered"
+above), so there is no ground-truth dataset to measure recall against. The gate for this stage is
+instead a well-tested library validated by **hand-verified cases against this repository's own real
+indexed graph**, the same rigor pattern as Stage 4's "10 hand-verified call edges" and Stage 5's
+real-git-repo tests.
+
+Built `packages/engine/src/revu/context/`, six modules in pipeline order:
+- `diff.py` — a hand-rolled unified-diff parser (no new dependency) producing per-file `Hunk`s with
+  exact old/new line numbers, tested against hand-constructed diffs covering multi-hunk, multi-file,
+  pure-addition, pure-deletion, and no-trailing-newline cases.
+- `mapping.py` — maps a hunk's changed line range onto graph nodes by containment/overlap, with a
+  module-level fallback when a hunk touches code with no enclosing function/class.
+- `traverse.py` — bounded k-hop expansion over the Stage 4 graph, with **every edge kind
+  individually toggleable** (required for future ablations, not polish) and direction control
+  (callers/callees/both).
+- `rank.py` — a configurable weighted combination of inverse graph distance and BM25 over diff text
+  vs. candidate content (crude regex tokenization, documented as a known limitation). A third,
+  **pluggable embedding-similarity slot exists with default weight 0 and is deliberately not
+  implemented** — adding a real embedding signal would mean either a paid API call (forbidden this
+  stage) or a heavy local ML dependency (disproportionate for one ranking signal); the slot exists so
+  it can be dropped in later without reshaping the module.
+- `budget.py` — greedy knapsack selection under a token budget, costed with **`tiktoken`** (added as
+  an explicit dependency of `revu`, not left as an unlisted transitive one via `litellm`), not a
+  character estimate.
+- `bundle.py` — wires the above into `build_context_bundle(diff_text, graph, repo_root, config=...)`,
+  the single entry point Stage 7 will call, mirroring `revu.agents.diff_only.review_diff`'s "one
+  function, plain keyword configuration" shape. Assembles `revu.models.ContextBundle`/`ContextItem`
+  (the Stage 1 Pydantic types — no parallel types invented) with a human-readable `retrieval_reason`
+  per item (e.g. "1-hop caller via `calls` edge from `...`").
+
+**The hand-verified acceptance check** (`packages/engine/tests/context/test_integration.py`): built a
+real index of this repository's own working tree, constructed a real diff against
+`api.services.repositories.get_or_create_repository`'s actual body, and confirmed — having read the
+real source first, not by construction — that its one real resolved caller
+(`api.services.branch_index.trigger_index_build`) surfaces as 1-hop context, while a second module
+that imports but calls it through a module-level alias correctly does *not* surface as a resolved
+call (a real, pre-existing Stage 4 limitation — aliased calls need type inference — exercised
+honestly here rather than avoided). Four tests against this same real graph confirm: the caller
+appears at k=1 but not k=0; a `calls`-only traversal reaches it while an `imports`-only traversal
+(correctly) doesn't, since the seed is a function node and import edges only connect module nodes;
+and the token budget is always respected while a larger budget never shrinks the bundle. As stated in
+the test's own docstring: this confirms the full pipeline connects correctly end-to-end against a
+real, non-trivial, cross-file graph — it is not a statement about recall or precision in general,
+since no ground-truth dataset exists in this track to measure that against.
+
+**Process note on how this stage was finished:** the implementing agent was cut off mid-task by a
+Claude usage-limit rate error, after the core modules and all tests (including the hand-verified
+integration test) were already written and passing. The orchestrating session picked up from there,
+independently re-ran the full suite to confirm the agent's own report, then fixed the remaining
+polish itself: 11 ruff line-length/import-order issues and one `B008` mutable-default-argument
+warning (`RankWeights()` as a literal default → a module-level frozen singleton), plus 7 real mypy
+strict-mode errors — two in `diff.py` where a list comprehension filtered by `line.kind` without
+narrowing the sibling `line_start`/`line_end` field's `int | None` type (fixed by moving the
+`is not None` check into the same comprehension clause), and one in `bundle.py` where `int(node[...])`
+was called against a `dict[str, object]`-typed value (fixed with an explicit `isinstance` assertion
+rather than silently loosening the type to `Any`). All are mechanical, none change behavior — the
+agent's design and test coverage were sound as delivered.
+
+Verified: `ruff check .`, `mypy --strict`, and `pytest` (**187/187**, 42 new) all pass. This is a pure
+`packages/engine` library addition — no new API endpoints, no worker changes, no Docker rebuild
+needed, matching Stage 4's precedent. No LLM or embedding API calls made anywhere in this stage.
+
 ## Next action
 
-Stage 6: change-impact / context retrieval — diff→hunk mapping, bounded k-hop graph traversal from
-the changed hunks (using the graph `BranchIndex.graph_ref` now reliably points at), a token-budgeted
-knapsack over the traversal result, and a `retrieval_reason` per context item. This is also where
-`revu.index.vcs.resolve_pr_merge_base` gets an actual caller: computing an analysis run's real
-merge-base context and deciding what to do when the stored branch index has drifted past it.
+Stage 7 — the cross-file agent and tool layer, replacing `diff_only` as the default reviewer. This is
+the first stage since Stage 3 that makes live LLM calls, and per the roadmap the agent decomposition
+and prompt design are explicitly something to "keep yourself" rather than delegate — **the user has
+said this stage is done together, not autonomously**, both for the design decisions involved and
+because it spends real money against their paid API key.

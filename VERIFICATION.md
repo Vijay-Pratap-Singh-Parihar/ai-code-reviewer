@@ -1,4 +1,4 @@
-# Verification — Stages 0–5
+# Verification — Stages 0–6
 
 Reproducible steps for what's already been verified in this branch. Each block is
 copy-pasteable; expected output is noted inline. See [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)
@@ -377,4 +377,46 @@ Cleanup:
 ```bash
 docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM organizations WHERE name = 'Demo Org';"
 docker exec ai-code-reviewer-worker-1 rm -rf /tmp/demo-repo
+```
+
+## Stage 6 — context retrieval (library only, no new endpoint)
+
+Everything here runs via `uv run python`/`pytest`, not Docker/curl — Stage 6 is a `packages/engine`
+library addition (`revu.context`), not wired into an API/worker endpoint yet (that's Stage 7).
+
+```bash
+uv run pytest packages/engine/tests/context -v
+# → 42 passed, including test_integration.py's 4 hand-verified cases against this repo's own
+#   real indexed graph (see IMPLEMENTATION_PLAN.md Stage 6 for exactly what was hand-verified)
+```
+
+### Build a context bundle for a real diff to this repository
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+from revu.context import build_context_bundle, RetrievalConfig
+from revu.index.graph import build_index_at_path
+
+repo_root = Path(".")
+graph = build_index_at_path(repo_root).graph
+
+diff_text = """diff --git a/apps/api/src/api/services/repositories.py b/apps/api/src/api/services/repositories.py
+--- a/apps/api/src/api/services/repositories.py
++++ b/apps/api/src/api/services/repositories.py
+@@ -30,4 +30,4 @@ async def get_or_create_repository(
+ ) -> Repository:
+-    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name))
++    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name.strip()))
+     if repo is not None:
+"""
+
+bundle = build_context_bundle(diff_text, graph, repo_root, config=RetrievalConfig(k=1))
+print(f"items={len(bundle.items)} total_tokens={bundle.total_tokens}")
+for item in bundle.items:
+    print(f"  {item.file_path}:{item.line_start}-{item.line_end}  {item.retrieval_reason}")
+PY
+# → 4 items, 831 tokens: the changed function itself, its real 1-hop caller
+#   (api.services.branch_index.trigger_index_build), and two real 1-hop callees —
+#   each with a human-readable retrieval_reason, well under the default 8000-token budget
 ```
