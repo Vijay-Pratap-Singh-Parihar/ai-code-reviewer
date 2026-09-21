@@ -1,7 +1,16 @@
 from pathlib import Path
 
+import pytest
 import rustworkx as rx
-from revu.index.store import load_graph, save_graph, to_branch_index_fields
+from revu.index.graph import IndexResult, build_index_at_path
+from revu.index.store import (
+    index_result_path,
+    load_graph,
+    load_index_result,
+    save_graph,
+    save_index_result,
+    to_branch_index_fields,
+)
 
 
 def test_save_and_load_graph_round_trips(tmp_path: Path) -> None:
@@ -57,6 +66,57 @@ def test_to_branch_index_fields_shapes_a_branch_index_row() -> None:
         "unresolved_symbols": [{"kind": "call", "reason": "test"}],
         "build_duration_ms": 1234,
     }
+
+
+def test_save_and_load_index_result_round_trips(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("def f():\n    return g()\n\n\ndef g():\n    return 1\n")
+    result = build_index_at_path(tmp_path)
+
+    path = save_index_result(
+        result,
+        repo_identifier="org/repo",
+        branch_name="main",
+        head_sha="a" * 40,
+        storage_dir=tmp_path / ".blobs",
+    )
+    assert path.exists()
+    assert path.name.endswith(".result.pkl.gz")
+
+    loaded = load_index_result(path)
+    assert isinstance(loaded, IndexResult)
+    assert {s.qualified_name for s in loaded.symbols} == {s.qualified_name for s in result.symbols}
+    assert {(c.caller, c.callee) for c in loaded.call_edges} == {
+        (c.caller, c.callee) for c in result.call_edges
+    }
+    assert loaded.node_count == result.node_count
+
+
+def test_index_result_path_matches_save_index_result(tmp_path: Path) -> None:
+    result = build_index_at_path(tmp_path)
+    saved_path = save_index_result(
+        result,
+        repo_identifier="org/repo",
+        branch_name="main",
+        head_sha="deadbeef",
+        storage_dir=tmp_path / ".blobs",
+    )
+    computed_path = index_result_path(
+        repo_identifier="org/repo",
+        branch_name="main",
+        head_sha="deadbeef",
+        storage_dir=tmp_path / ".blobs",
+    )
+    assert saved_path == computed_path
+
+
+def test_load_index_result_rejects_a_graph_only_blob(tmp_path: Path) -> None:
+    graph: rx.PyDiGraph = rx.PyDiGraph()
+    graph_path = save_graph(
+        graph, repo_identifier="org/repo", branch_name="main", head_sha="x", storage_dir=tmp_path
+    )
+    with pytest.raises(TypeError):
+        load_index_result(graph_path)
 
 
 def test_to_branch_index_fields_caps_unresolved_list() -> None:

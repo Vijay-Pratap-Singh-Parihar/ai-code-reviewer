@@ -149,6 +149,60 @@ curl -s http://localhost:8000/analysis/$RUN_ID -H "Authorization: Bearer $TOKEN"
 repo, connectable to only one org's installation) — a second org posting the same
 `repo_full_name` gets `409 Conflict`, not a silently misattributed run.
 
+## Branch memory (Stage 5)
+
+`BranchIndex`/`IndexUpdateLog` now have a real row lifecycle, wired end to end: trigger a build via
+the API, the worker does the actual git/indexing work, results land in Postgres. Still no real
+GitHub webhook (Stage 10) — the caller supplies a filesystem path to a git repository the **worker
+process** can read, the same intentional simplification as Stage 3's "caller supplies the diff
+directly."
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"org_name":"Acme Inc","email":"me@example.com","password":"correct-horse-battery"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# repo_path must exist on the *worker container's* filesystem, not the host's —
+# see VERIFICATION.md's Stage 5 section for how to set up a throwaway repo there.
+TRIGGER=$(curl -s -X POST http://localhost:8000/repos/index \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/widgets","branch_name":"main","repo_path":"/tmp/demo-repo"}')
+REPO_ID=$(echo "$TRIGGER" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+
+# Poll until the build finishes
+curl -s http://localhost:8000/repos/$REPO_ID/branches/main/index -H "Authorization: Bearer $TOKEN"
+```
+
+A manual/forced full rebuild reuses the same trigger endpoint with `"force_full": true` — there's no
+separate endpoint for it. The status endpoint never reflects a build that's still in progress: while
+one `BranchIndex` row is `building`, the previous `ready` row (or "no index yet" for a brand-new
+branch) is what's returned, with `is_stale: true` noting a newer attempt is underway. See
+`IMPLEMENTATION_PLAN.md`'s Stage 5 write-up for the full row-lifecycle design (why every build
+attempt gets its own row instead of one row mutated in place), the force-push/non-fast-forward
+detector, and two real bugs found and fixed while building this (one in Stage 4's incremental update,
+one a Postgres `now()` transaction-scoping gotcha).
+
+## Context / change-impact retrieval (Stage 6)
+
+`revu.context` (`packages/engine/src/revu/context/`) turns a diff + a Stage 4/5 indexed graph into a
+token-budgeted `ContextBundle` — the input Stage 7's agent will consume, not something exposed via
+an API yet. Plain importable library, same pattern as the indexer:
+
+```python
+from pathlib import Path
+from revu.context import build_context_bundle, RetrievalConfig
+from revu.index.graph import build_index_at_path
+
+graph = build_index_at_path(Path("/path/to/a/repo")).graph
+bundle = build_context_bundle(diff_text, graph, Path("/path/to/a/repo"), config=RetrievalConfig(k=2))
+print(bundle.total_tokens, [item.retrieval_reason for item in bundle.items])
+```
+
+No benchmark-driven recall curve exists in this track (see `IMPLEMENTATION_PLAN.md` Stage 6 for why)
+— it's validated instead by a hand-verified case against this repository's own real indexed graph,
+in the same spirit as Stage 4's 10 hand-verified call edges.
+
 ## Status
 
 Build order and what's covered vs. deferred from the original roadmap: see

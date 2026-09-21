@@ -1,4 +1,4 @@
-# Verification — Stages 0–4
+# Verification — Stages 0–6
 
 Reproducible steps for what's already been verified in this branch. Each block is
 copy-pasteable; expected output is noted inline. See [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)
@@ -16,7 +16,7 @@ uv sync --all-packages --group dev
 ```bash
 uv run ruff check .                                                              # → All checks passed!
 uv run mypy packages/engine/src packages/db/src apps/api/src apps/worker/src    # → Success: no issues found
-uv run pytest -v                                                                 # → 107 passed
+uv run pytest -v                                                                 # → 145 passed
 ```
 
 `apps/api/tests/test_models_db.py`, `test_auth.py`, `test_analysis.py`, and
@@ -262,3 +262,161 @@ quirk where an open repo handle can briefly block deleting its own temp director
 — harmless, but worth not lying about in a copy-pasteable snippet. The pytest suite itself is
 unaffected: `tmp_path`'s teardown runs after each test's local `Repo` object is already out of
 scope and garbage-collected.)
+
+## Stage 5 — branch memory, end to end against Docker
+
+```bash
+uv run pytest packages/engine/tests/index/test_vcs.py apps/worker/tests/test_index_branch.py \
+  apps/api/tests/test_branch_index.py -v
+# → 35 passed (13 vcs + 12 worker/index_branch + 10 api/branch_index)
+```
+
+### Live, against the running containers
+
+The worker needs the `git` CLI at runtime now (Stage 4's GitPython calls were never actually
+exercised inside a container before this stage), so rebuild it:
+
+```bash
+docker compose build api worker
+docker compose up -d --force-recreate api worker
+docker compose logs worker --tail 5
+# → "Starting worker for 4 functions: ping, db_ping, analyze_pr, update_branch_index"
+```
+
+`repo_path` in the trigger request must exist on the **worker container's** filesystem (there's no
+GitHub App yet — see IMPLEMENTATION_PLAN.md Stage 5 — and no host volume mount for arbitrary repos),
+so build a real throwaway git repo inside the container itself:
+
+```bash
+docker exec ai-code-reviewer-worker-1 sh -c '
+  set -e
+  rm -rf /tmp/demo-repo && mkdir -p /tmp/demo-repo && cd /tmp/demo-repo
+  git init -q && git config user.name Demo && git config user.email demo@example.com
+  mkdir -p pkg
+  : > pkg/__init__.py
+  printf "def helper():\n    return 1\n" > pkg/utils.py
+  printf "from pkg.utils import helper\n\ndef run():\n    return helper()\n" > pkg/main.py
+  git add -A && git commit -q -m "first commit" && git branch -M main
+  git rev-parse HEAD
+'
+```
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"org_name":"Demo Org","email":"verify-stage5@example.com","password":"correct-horse-battery"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+TRIGGER=$(curl -s -X POST http://localhost:8000/repos/index \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/demo-repo","branch_name":"main","repo_path":"/tmp/demo-repo"}')
+echo "$TRIGGER"   # → status: "pending", head_sha: null — nothing usable is exposed until it's ready
+REPO_ID=$(echo "$TRIGGER" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+
+sleep 2
+curl -s http://localhost:8000/repos/$REPO_ID/branches/main/index -H "Authorization: Bearer $TOKEN"
+# → has_ready_index: true, head_sha resolved to the real commit, mode "full",
+#   reason "first successful index build for this branch"
+```
+
+### Incremental update on a real commit, force-push detection, and manual rebuild
+
+```bash
+# A normal follow-up commit inside the container...
+docker exec ai-code-reviewer-worker-1 sh -c '
+  cd /tmp/demo-repo
+  printf "from pkg.utils import helper\n\ndef run():\n    return helper()\n\ndef run_twice():\n    return run() + run()\n" > pkg/main.py
+  git add -A && git commit -q -m "second commit"
+'
+curl -s -X POST http://localhost:8000/repos/index -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/demo-repo","branch_name":"main","repo_path":"/tmp/demo-repo"}' > /dev/null
+sleep 2
+curl -s http://localhost:8000/repos/$REPO_ID/branches/main/index -H "Authorization: Bearer $TOKEN"
+# → last_update.mode: "incremental", from_sha/to_sha both set, files_changed: 1
+
+# ...then rewrite history (force-push shape) and trigger again:
+docker exec ai-code-reviewer-worker-1 sh -c '
+  cd /tmp/demo-repo
+  git reset --hard HEAD~1
+  printf "from pkg.utils import helper\n\ndef run():\n    return helper() * 100\n" > pkg/main.py
+  git add -A && git commit -q -m "rewritten history"
+'
+curl -s -X POST http://localhost:8000/repos/index -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/demo-repo","branch_name":"main","repo_path":"/tmp/demo-repo"}' > /dev/null
+sleep 2
+curl -s http://localhost:8000/repos/$REPO_ID/branches/main/index -H "Authorization: Bearer $TOKEN"
+# → last_update.mode: "full", reason: "non-fast-forward update detected (force-push or rebase);
+#   full rebuild" — the real force-push/rebase detector, not a heuristic guess
+
+# Manual/forced rebuild reuses the same endpoint:
+curl -s -X POST http://localhost:8000/repos/index -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/demo-repo","branch_name":"main","repo_path":"/tmp/demo-repo","force_full":true}'
+sleep 2
+curl -s http://localhost:8000/repos/$REPO_ID/branches/main/index -H "Authorization: Bearer $TOKEN"
+# → last_update.mode: "full", reason: "manual full rebuild requested"
+```
+
+### Confirm the row lifecycle directly in Postgres
+
+```bash
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu \
+  -c "SELECT status, head_sha, created_at FROM branch_index ORDER BY created_at;"
+# → 4 rows, ALL status='ready' — older snapshots are kept, not deleted or overwritten,
+#   confirming the versioned-row design (see IMPLEMENTATION_PLAN.md Stage 5) live.
+
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu \
+  -c "SELECT mode, from_sha, to_sha, files_changed, reason FROM index_update_log ORDER BY created_at;"
+# → full (first build) / incremental (from_sha set) / full (non-fast-forward) / full (manual)
+```
+
+Cleanup:
+
+```bash
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM organizations WHERE name = 'Demo Org';"
+docker exec ai-code-reviewer-worker-1 rm -rf /tmp/demo-repo
+```
+
+## Stage 6 — context retrieval (library only, no new endpoint)
+
+Everything here runs via `uv run python`/`pytest`, not Docker/curl — Stage 6 is a `packages/engine`
+library addition (`revu.context`), not wired into an API/worker endpoint yet (that's Stage 7).
+
+```bash
+uv run pytest packages/engine/tests/context -v
+# → 42 passed, including test_integration.py's 4 hand-verified cases against this repo's own
+#   real indexed graph (see IMPLEMENTATION_PLAN.md Stage 6 for exactly what was hand-verified)
+```
+
+### Build a context bundle for a real diff to this repository
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+from revu.context import build_context_bundle, RetrievalConfig
+from revu.index.graph import build_index_at_path
+
+repo_root = Path(".")
+graph = build_index_at_path(repo_root).graph
+
+diff_text = """diff --git a/apps/api/src/api/services/repositories.py b/apps/api/src/api/services/repositories.py
+--- a/apps/api/src/api/services/repositories.py
++++ b/apps/api/src/api/services/repositories.py
+@@ -30,4 +30,4 @@ async def get_or_create_repository(
+ ) -> Repository:
+-    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name))
++    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name.strip()))
+     if repo is not None:
+"""
+
+bundle = build_context_bundle(diff_text, graph, repo_root, config=RetrievalConfig(k=1))
+print(f"items={len(bundle.items)} total_tokens={bundle.total_tokens}")
+for item in bundle.items:
+    print(f"  {item.file_path}:{item.line_start}-{item.line_end}  {item.retrieval_reason}")
+PY
+# → 4 items, 831 tokens: the changed function itself, its real 1-hop caller
+#   (api.services.branch_index.trigger_index_build), and two real 1-hop callees —
+#   each with a human-readable retrieval_reason, well under the default 8000-token budget
+```

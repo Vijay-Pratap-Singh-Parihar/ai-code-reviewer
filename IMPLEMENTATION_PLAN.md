@@ -20,8 +20,8 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 2 | FastAPI skeleton, JWT auth (access + rotating refresh), ARQ worker, health checks | App Week 14 | ✅ done |
 | 3 | Simplified reviewer: single LiteLLM call over PR title/body/diff, JSON-schema output, wrapped as a background job | Roadmap Phase 2 (`diff_only` agent), adapted | ✅ done |
 | 4 | Basic Python indexer: git worktree checkout, file walker, tree-sitter symbols, import edges, name-based call edges, `rustworkx` graph, Postgres persistence, incremental update | Roadmap Phase 3 | ✅ done |
-| 5 | Branch memory: `branch_index` / `index_update_log` tables live, staleness states, force-push → full rebuild detection, merge-base resolution (triggered via API call, not a real push webhook yet) | App Week 16 + Phase 3 incremental design | Not started |
-| 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | Not started |
+| 5 | Branch memory: `branch_index` / `index_update_log` tables live, staleness states, force-push → full rebuild detection, merge-base resolution (triggered via API call, not a real push webhook yet) | App Week 16 + Phase 3 incremental design | ✅ done |
+| 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | ✅ done |
 | 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | Not started |
 | 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | Not started |
 | 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | Not started |
@@ -251,11 +251,290 @@ number) and resolved import edges from 245 to 157 — the fix removed noise, not
 - No Docker rebuild — Stage 4 is a `packages/engine` library addition only, not wired into any
   API endpoint or worker job yet, so there's no running service whose image would change.
 
+## Stage 5 — done
+
+Built the full `BranchIndex`/`IndexUpdateLog` row lifecycle from `Product_Architecture_FullStack.md`
+§2, wired end to end: `POST /repos/index` (API) → `update_branch_index` (ARQ job, `apps/worker`) →
+Stage 4's indexer → real Postgres rows.
+
+**Row-lifecycle design decision — versioned rows, not in-place mutation.** The architecture doc's
+sketch (`branch_index(id, repo_id, branch_name, head_sha, ...)`) reads as one row per snapshot, and
+the task's own phrasing for the staleness subtlety ("keep the old ready row until the new one
+supersedes it") confirmed it: **every build attempt gets its own `BranchIndex` row**, rather than
+one row per `(repo_id, branch_name)` mutated in place across rebuilds. A row is written to
+`status=ready` exactly once, in a single final `UPDATE` that sets every data column
+(`head_sha`, `node_count`, `edge_count`, `graph_ref`, `unresolved_symbols`, `build_duration_ms`,
+`built_at`) and `status=ready` together, in the same transaction. "The current index for a branch"
+is then just `SELECT ... WHERE status = 'ready' ORDER BY created_at DESC LIMIT 1`
+(`api.services.branch_index.get_current_branch_index`) — a `building`, `pending`, or `failed` row
+for the same branch is simply invisible to that query, so **a reader can never observe a
+half-written graph structurally**, not just by convention. Older `ready` rows are never deleted or
+downgraded; they stay queryable (e.g. for a future "diff two points in the branch's history"
+feature the architecture doc mentions as a free side benefit of this design). This did require two
+small schema changes, in a new Alembic migration (`84829fb72d49`):
+- `branch_index.created_at` and `index_update_log.created_at` added (`CreatedAtMixin`) — needed to
+  order build attempts chronologically, since neither table had a timestamp column that always gets
+  set (a row's own `built_at`/`updated_at` are null until a build succeeds).
+- `branch_index.head_sha` made nullable — a row starts life as `pending` (created by the API) before
+  the worker has even resolved which commit it's targeting, since resolving a bare branch name to a
+  SHA needs a real git checkout the API layer intentionally doesn't do (see below).
+- Also added an index on `(repo_id, branch_name, created_at)` for the lookup pattern above.
+
+**A real, non-obvious Postgres gotcha found while testing this:** `CreatedAtMixin`'s
+`server_default=func.now()` uses Postgres's `now()`, which is **transaction-scoped**
+(`transaction_timestamp()`) — every statement inside one transaction gets the *same* timestamp. Two
+`BranchIndex`/`IndexUpdateLog` rows created inside one transaction (which the API test harness's
+savepoint-per-request pattern does routinely, and which could in principle happen in production too)
+would get identical `created_at` values, making the "most recent" ordering the whole staleness
+mechanism depends on ambiguous. Fixed by setting `created_at` explicitly with a Python-side
+`datetime.now(UTC)` at every construction site in `api.services.branch_index` and
+`worker.jobs.index_branch`, rather than relying on the DB default — a client-side clock advances
+per statement even inside one open transaction. Caught by `test_get_branch_index_returns_ready_row_and_flags_stale_during_rebuild`
+failing nondeterministically-looking (actually deterministically wrong) before the fix.
+
+**API surface (`apps/api/src/api/routers/branch_index.py` + `.../services/branch_index.py`).**
+Mirrors `analysis.py`'s router/service split and org-scoping pattern exactly (`get_run_for_org`'s
+"invisible rather than a leaked 403" convention), with one deliberate deviation from the task's
+suggested `POST /repos/{repo_id}/index` shape:
+- **`POST /repos/index`** — body carries `repo_full_name` (get-or-create, same as `AnalysisRequest`),
+  `branch_name`, `repo_path`, optional `target_sha`, and `force_full`. There is still no endpoint
+  that creates a bare `Repository` row on its own (no GitHub App until Stage 10), so a path-based
+  `{repo_id}` would require the caller to already know an ID they have no way to obtain before their
+  first trigger call — body-based, get-or-create-by-name is the only self-consistent choice given
+  what Stage 3 already established, so the trigger endpoint follows that instead. Returns 202 with
+  the new `pending` row and enqueues `update_branch_index`.
+- **`GET /repos/{repo_id}/branches/{branch_name}/index`** — matches the task's suggested shape
+  exactly (by this point `repo_id` is known from the trigger response). Returns the "Branch Memory"
+  screen's data: whether a ready index exists, its stats, `is_stale` (a newer, non-ready attempt
+  exists), the latest attempt's status, and the last 10 `IndexUpdateLog` entries.
+- **Manual rebuild** reuses `POST /repos/index` with `force_full: true`, per the task's own suggested
+  option — no separate endpoint.
+- `RepositoryOwnedByAnotherOrgError`/`get_or_create_repository` moved out of `api.services.analysis`
+  into a new shared `api.services.repositories` module (re-exported from `analysis.py` for backward
+  compatibility, so Stage 3's existing tests/imports are untouched) since both routers need identical
+  get-or-create-by-name logic.
+- `repo_path` is a filesystem path the **worker process** must be able to read, not the caller or the
+  API process — same intentional simplification as Stage 3's "caller supplies the diff directly"
+  (no GitHub App yet). This is also why `IndexTriggerRequest`'s target-SHA resolution happens
+  worker-side, not in the router: the API process has no reason to touch a git checkout at all.
+
+**Worker job (`apps/worker/src/worker/jobs/index_branch.py`).** `update_branch_index` — same shape
+as Stage 3's `analyze_pr`: load the row, do the real work, persist the result, never leave a row
+stuck mid-state on an exception. State machine: `pending` (as created by the API) →
+resolve `target_sha` if not pinned (`revu.index.vcs.resolve_branch_head`, falling back from a local
+branch ref to `origin/<branch>` since this track has no App-managed clone) → `building` (committed
+immediately, so nothing can read this row as "ready" while the actual indexing work — which can take
+seconds — is in flight) → decide full vs. incremental (`_decide_and_build`, a pure/DB-free function
+so it's unit-testable without Postgres and safely runs inside `asyncio.to_thread` since git/tree-sitter
+work is blocking) → persist the graph + full result blobs → one final `UPDATE` to `ready` with every
+column + the `IndexUpdateLog` row, same transaction. Any exception at any stage marks the row
+`failed` with a matching log entry instead of leaving it stuck on `building`.
+
+`_decide_and_build`'s decision order, each with its own recorded `IndexUpdateLog.reason`:
+1. No previous `ready` row for this branch → full build ("first successful index build for this branch").
+2. `force_full=True` → full build ("manual full rebuild requested") — the manual-rebuild path.
+3. `target_sha` unchanged from the previous ready row's `head_sha` → full build (re-index at the same
+   commit; a degenerate case, treated as full rather than a zero-file incremental for simplicity).
+4. `revu.index.vcs.is_ancestor(old_head, new_head)` is `False` → full build ("non-fast-forward update
+   detected (force-push or rebase)") — this is the force-push detector, using real
+   `git merge-base --is-ancestor` via GitPython, not a heuristic.
+5. The previous build's full `IndexResult` blob is missing/unreadable → full build (defensive
+   fallback; a genuinely incremental update needs the previous run's full symbol table, not just its
+   graph — see below).
+6. Otherwise → `revu.index.incremental_update`, reusing `revu.index.vcs.is_ancestor`'s "yes" answer.
+
+**Why persisting the full `IndexResult`, not just the graph, was necessary — a real Stage 4 gap
+closed here.** `revu.index.incremental_update` needs the *previous* run's `IndexResult` (specifically
+`.symbols`, `.import_edges`, `.call_edges`, `.unresolved`) to reconstruct unchanged files without
+re-parsing them — but Stage 4's `store.py` only ever persisted the bare `rustworkx.PyDiGraph`
+(`save_graph`/`load_graph`, which is what `BranchIndex.graph_ref` points to and is what a graph
+*consumer* like Stage 6 wants). A graph blob alone doesn't carry enough information back out to do a
+second incremental update in a fresh worker process. Rather than changing what `graph_ref` points to
+(breaking Stage 4's existing contract and its own passing test), added a second pair of functions,
+`save_index_result`/`load_index_result`, that serialise the *whole* `IndexResult` to a sidecar blob
+at a deterministic path derived from the same `(repo_identifier, branch_name, head_sha)` key
+(`index_result_path`) — no new `BranchIndex` column needed, since the path is always recomputable
+from data the row already has.
+
+**A second real bug found and fixed while wiring this up (in Stage 4's `incremental.py`, not new
+Stage 5 code):** `assemble_graph` called `resolve_calls` on *every* parsed file it was given,
+including the reconstructed-from-symbols entries `incremental_update` builds for **unchanged**
+files — which carry `source=b""` since there was no need to re-read them from disk. Parsing an empty
+byte string finds zero call sites, so **every call edge whose caller lived in an unchanged file
+silently vanished on every incremental update** — not just ones targeting a renamed/removed symbol,
+which is the only loss Stage 4's docstring documented. Across repeated incremental updates (exactly
+what branch memory does over a branch's lifetime), this would have quietly eroded the call graph down
+to almost nothing after a few pushes. Fixed by giving `assemble_graph` an `extra_call_edges`
+parameter: `incremental_update` now passes forward the previous run's call edges whose *caller's*
+file wasn't reparsed this run, re-attaching them to the freshly-built graph (dropped only if their
+caller/callee node genuinely no longer exists — the one loss that actually is still expected and
+documented). Regression-tested with two incremental updates in a row (the bug would resurface on the
+second pass if the fix were incomplete) and a companion test proving the genuinely-expected
+rename/removal loss still behaves as documented.
+
+**Merge-base resolution (`revu.index.vcs`).** `resolve_pr_merge_base(repo_path, base_branch=...,
+pr_head_sha=..., indexed_head_sha=...)` computes the real `git merge-base` between a PR's head and
+its base branch, and reports whether the currently-indexed snapshot (`BranchIndex.head_sha`) covers
+that merge base or predates it (a genuinely stale index that can't be used as-is) versus has simply
+advanced past it since (normal, expected, not a problem). Exposed as a plain function per the task's
+instruction not to over-build a feature around it — Stage 6 owns deciding what to do with the
+result (walk the index backwards, or record drift on the analysis run); Stage 5 only guarantees the
+computation is available and correct. `is_ancestor`/`compute_merge_base`/`resolve_branch_head` are
+the other three plumbing functions in the same module, all tested against real git repos (rewritten
+history, diverging branches, unrelated histories via `git fetch` grafting).
+
+**Unresolved-symbol persistence.** `IndexResult.unresolved` (a list of `UnresolvedRef` — kind,
+file, line, name, reason) flows straight through `to_branch_index_fields` into
+`BranchIndex.unresolved_symbols` (JSONB, capped at 500 entries per Stage 4's existing cap) on every
+successful build, full or incremental — nothing is discarded. **What Stage 5 does not build:**
+automatic retrospective re-resolution (re-attempting a previously-unresolved reference when a later
+merge adds the missing module). The architecture doc frames persistence itself, plus the resulting
+per-repository quality metric, as the requirement ("gives you a quality metric per repository") —
+actual re-resolution would need diffing unresolved-ref sets against newly-resolved symbols across
+builds, which is speculative future work with no consumer yet; building it now would be scope creep
+against an unbuilt need.
+
+**Testing (all against real Postgres/real git repos, no mocks of either):**
+- `packages/engine/tests/index/test_vcs.py` (13 tests) — `is_ancestor` true for a real fast-forward
+  and false for a real rewritten history (constructs an actual `git reset --hard` + new commit, not a
+  simulated one), `compute_merge_base` checked against running real `git merge-base` on the same repo
+  and against unrelated histories (`NoCommonAncestorError`), `resolve_branch_head` including the
+  local-branch-deleted / `origin/<branch>`-only fallback case, and `resolve_pr_merge_base`'s three
+  outcomes (current, drifted, advanced-since).
+- `packages/engine/tests/index/test_incremental.py` (+2) and `test_graph.py`/`test_store.py` (+3) —
+  the call-edge-carry-forward regression (two incremental updates in a row) and the still-expected
+  rename/removal loss, plus `save_index_result`/`load_index_result`/`index_result_path` round-trips.
+- `apps/worker/tests/test_index_branch.py` (12 tests) — `_decide_and_build` unit-tested directly
+  against real git repos for all five decision branches (first build, force_full, unchanged head,
+  non-fast-forward, missing blob), then `update_branch_index` end to end against real Postgres:
+  first build (full), second build (incremental, correct `from_sha`/`to_sha`), a real force-push
+  scenario across three sequential builds (full → full → force-pushed-full, with older `ready` rows
+  left untouched), branch-head auto-resolution, a build failure marking the row `failed`, and
+  unresolved-symbol persistence.
+- `apps/api/tests/test_branch_index.py` (10 tests) — trigger/enqueue-argument assertions, auth,
+  404s (unknown repo, other org), the 409 repo-ownership conflict (reusing the Stage 3 regression),
+  "no index yet" before any build completes, and the staleness assertion itself: with a real `ready`
+  row and a real newer `building` row in Postgres, the status endpoint returns the `ready` row's data
+  verbatim and only flips `is_stale` — proving the "never read a half-written graph" guarantee against
+  the actual query, not just by inspection of the code.
+- `uv run ruff check .`, `uv run mypy packages/engine/src packages/db/src apps/api/src
+  apps/worker/src`, and `uv run pytest` (145/145) all pass.
+
+**Docker verification:** rebuilt `api`/`worker` images (the worker's `Dockerfile` now also installs
+the `git` CLI package — Stage 4's GitPython calls need it at runtime, and until this stage nothing
+had ever actually exercised `revu.index` from inside a container). `docker compose logs worker`
+confirmed all four jobs registered (`ping, db_ping, analyze_pr, update_branch_index`). Built a real
+throwaway git repo inside the **worker container's own filesystem** (`docker exec` into
+`ai-code-reviewer-worker-1`, since there's no volume mount making the host repo visible to it — see
+"Known limitations" below) and drove the full state machine through real HTTP calls against the
+running API:
+1. First trigger → `pending` row returned immediately (`head_sha: null`), worker log shows the job
+   picked up within the same second; `GET .../index` then showed `status=ready`,
+   `head_sha` correctly resolved from the branch name, `node_count=5`/`edge_count=2`, mode `full`,
+   reason `"first successful index build for this branch"`.
+2. Added a real commit inside the container, triggered again → mode flipped to `incremental`,
+   `from_sha`/`to_sha` both correct, `files_changed=1` — confirmed via `psql` directly against the
+   dockerized Postgres, not just the API response.
+3. `git reset --hard` back to the first commit + a new divergent commit inside the container (a real
+   force-push-shaped history rewrite) → the next trigger correctly fell back to `mode=full`,
+   `reason="non-fast-forward update detected (force-push or rebase); full rebuild"` — the exact
+   scenario the architecture doc calls out, verified against the live, containerized `git` binary and
+   database, not a mock.
+4. `force_full: true` against an otherwise-fast-forward-eligible state → `mode=full`,
+   `reason="manual full rebuild requested"` — the manual-rebuild surface.
+5. `psql`-inspected `branch_index`/`index_update_log` directly after all four triggers: **four**
+   `BranchIndex` rows, all `status=ready`, none deleted or overwritten — confirming the versioned-row
+   design live, not just in the test suite. Cleanup via `DELETE FROM organizations ...` cascaded
+   correctly through `repositories` → `branch_index` → `index_update_log`.
+
+**Known limitations, reported honestly:**
+- Graph/result blobs are written to the worker container's local filesystem
+  (`REVU_INDEX_STORAGE_DIR`, default `.revu/index-graphs` relative to its cwd) — ephemeral across
+  container recreation, with no volume mount added for it. Fine for this stage (no feature yet
+  depends on a blob surviving a restart); a real deployment would need a persistent volume or object
+  storage before this matters in production.
+- `db.repository.TrackedBranch` (the `auto_index`/`is_protected` model from Stage 1) is not wired
+  into Stage 5 at all — every build is triggered explicitly via `POST /repos/index`, not driven by a
+  tracked-branches table. Nothing currently reads or writes it; that's real future-webhook wiring
+  (Stage 10), not something Stage 5 needed to fake.
+- The worker job's defensive "repository row is gone" failure path is untested against a real DB: the
+  `branch_index.repo_id` foreign key is `ON DELETE CASCADE`, so a `Repository` actually being deleted
+  would delete its `BranchIndex` rows too, making that race unreachable through normal deletion — the
+  code path is kept as cheap insurance against future schema changes, not because it's currently
+  reachable.
+- No API endpoint surfaces `resolve_pr_merge_base` yet — correctly, per the task's instruction; it's
+  a tested, importable function waiting for Stage 6 to consume it, not a feature of its own.
+
+## Stage 6 — done
+
+**Scope adaptation, stated up front:** the original Phase 4 spec calls for `eval/context_recall.py`
+and a benchmark-driven recall-vs-budget curve (`scripts/sweep_context.py --split dev`). Neither
+applies here — this track dropped the entire benchmarking harness (see "Explicitly not covered"
+above), so there is no ground-truth dataset to measure recall against. The gate for this stage is
+instead a well-tested library validated by **hand-verified cases against this repository's own real
+indexed graph**, the same rigor pattern as Stage 4's "10 hand-verified call edges" and Stage 5's
+real-git-repo tests.
+
+Built `packages/engine/src/revu/context/`, six modules in pipeline order:
+- `diff.py` — a hand-rolled unified-diff parser (no new dependency) producing per-file `Hunk`s with
+  exact old/new line numbers, tested against hand-constructed diffs covering multi-hunk, multi-file,
+  pure-addition, pure-deletion, and no-trailing-newline cases.
+- `mapping.py` — maps a hunk's changed line range onto graph nodes by containment/overlap, with a
+  module-level fallback when a hunk touches code with no enclosing function/class.
+- `traverse.py` — bounded k-hop expansion over the Stage 4 graph, with **every edge kind
+  individually toggleable** (required for future ablations, not polish) and direction control
+  (callers/callees/both).
+- `rank.py` — a configurable weighted combination of inverse graph distance and BM25 over diff text
+  vs. candidate content (crude regex tokenization, documented as a known limitation). A third,
+  **pluggable embedding-similarity slot exists with default weight 0 and is deliberately not
+  implemented** — adding a real embedding signal would mean either a paid API call (forbidden this
+  stage) or a heavy local ML dependency (disproportionate for one ranking signal); the slot exists so
+  it can be dropped in later without reshaping the module.
+- `budget.py` — greedy knapsack selection under a token budget, costed with **`tiktoken`** (added as
+  an explicit dependency of `revu`, not left as an unlisted transitive one via `litellm`), not a
+  character estimate.
+- `bundle.py` — wires the above into `build_context_bundle(diff_text, graph, repo_root, config=...)`,
+  the single entry point Stage 7 will call, mirroring `revu.agents.diff_only.review_diff`'s "one
+  function, plain keyword configuration" shape. Assembles `revu.models.ContextBundle`/`ContextItem`
+  (the Stage 1 Pydantic types — no parallel types invented) with a human-readable `retrieval_reason`
+  per item (e.g. "1-hop caller via `calls` edge from `...`").
+
+**The hand-verified acceptance check** (`packages/engine/tests/context/test_integration.py`): built a
+real index of this repository's own working tree, constructed a real diff against
+`api.services.repositories.get_or_create_repository`'s actual body, and confirmed — having read the
+real source first, not by construction — that its one real resolved caller
+(`api.services.branch_index.trigger_index_build`) surfaces as 1-hop context, while a second module
+that imports but calls it through a module-level alias correctly does *not* surface as a resolved
+call (a real, pre-existing Stage 4 limitation — aliased calls need type inference — exercised
+honestly here rather than avoided). Four tests against this same real graph confirm: the caller
+appears at k=1 but not k=0; a `calls`-only traversal reaches it while an `imports`-only traversal
+(correctly) doesn't, since the seed is a function node and import edges only connect module nodes;
+and the token budget is always respected while a larger budget never shrinks the bundle. As stated in
+the test's own docstring: this confirms the full pipeline connects correctly end-to-end against a
+real, non-trivial, cross-file graph — it is not a statement about recall or precision in general,
+since no ground-truth dataset exists in this track to measure that against.
+
+**Process note on how this stage was finished:** the implementing agent was cut off mid-task by a
+Claude usage-limit rate error, after the core modules and all tests (including the hand-verified
+integration test) were already written and passing. The orchestrating session picked up from there,
+independently re-ran the full suite to confirm the agent's own report, then fixed the remaining
+polish itself: 11 ruff line-length/import-order issues and one `B008` mutable-default-argument
+warning (`RankWeights()` as a literal default → a module-level frozen singleton), plus 7 real mypy
+strict-mode errors — two in `diff.py` where a list comprehension filtered by `line.kind` without
+narrowing the sibling `line_start`/`line_end` field's `int | None` type (fixed by moving the
+`is not None` check into the same comprehension clause), and one in `bundle.py` where `int(node[...])`
+was called against a `dict[str, object]`-typed value (fixed with an explicit `isinstance` assertion
+rather than silently loosening the type to `Any`). All are mechanical, none change behavior — the
+agent's design and test coverage were sound as delivered.
+
+Verified: `ruff check .`, `mypy --strict`, and `pytest` (**187/187**, 42 new) all pass. This is a pure
+`packages/engine` library addition — no new API endpoints, no worker changes, no Docker rebuild
+needed, matching Stage 4's precedent. No LLM or embedding API calls made anywhere in this stage.
+
 ## Next action
 
-Stage 5: branch memory — give `BranchIndex`/`IndexUpdateLog` a real row lifecycle (staleness
-states, force-push → full rebuild detection, merge-base resolution), triggered via an API call
-that invokes Stage 4's `build_index`/`incremental_update` from `apps/worker` (where both `revu`
-and `db` are available together) and writes the row using `store.to_branch_index_fields`. Also
-the natural point to decide whether indexing gets its own API endpoint, a worker job, or stays
-purely internal until an actual caller (Stage 6's context retrieval) needs it.
+Stage 7 — the cross-file agent and tool layer, replacing `diff_only` as the default reviewer. This is
+the first stage since Stage 3 that makes live LLM calls, and per the roadmap the agent decomposition
+and prompt design are explicitly something to "keep yourself" rather than delegate — **the user has
+said this stage is done together, not autonomously**, both for the design decisions involved and
+because it spends real money against their paid API key.

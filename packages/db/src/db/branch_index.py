@@ -2,13 +2,13 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db._enum import pg_enum
 from db.base import Base
-from db.mixins import TZDateTime, UUIDPrimaryKeyMixin
+from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
 
 
 class BranchIndexStatus(enum.StrEnum):
@@ -24,21 +24,39 @@ class IndexUpdateMode(enum.StrEnum):
     FULL = "full"
 
 
-class BranchIndex(UUIDPrimaryKeyMixin, Base):
-    """One index snapshot per (repository, base_branch), versioned by head_sha.
+class BranchIndex(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """One index snapshot *attempt* per (repository, base_branch), versioned by
+    head_sha and ordered by `created_at`.
 
-    See Product_Architecture_FullStack.md §2 for the branch-memory design this
-    table implements, including why `status` must model staleness explicitly
-    rather than assuming the latest row is always current.
+    **Stage 5 design decision:** rather than mutating a single row per
+    (repo_id, branch_name) in place across rebuilds, each build attempt gets
+    its own row. This is what makes "index staleness is a first-class state"
+    (Product_Architecture_FullStack.md §2) trivial to get right: a row is
+    only ever written to `status=ready` once every column on it reflects a
+    complete, successful build, and older `ready` rows for the same branch
+    are left untouched (not deleted, not overwritten) until a newer build
+    also reaches `ready`. "The current index for this branch" is therefore
+    always `SELECT ... WHERE status = 'ready' ORDER BY created_at DESC
+    LIMIT 1` (see `api.services.branch_index.get_current_branch_index`) — a
+    reader can never observe a half-written graph, because a row that isn't
+    fully written is never `ready` in the first place, and a `building`/
+    `pending`/`failed` row for the same branch is simply invisible to that
+    query. `head_sha` is nullable because a row starts life as `pending`
+    before the target commit has even been resolved (that resolution needs a
+    real git checkout, which is worker-side work, not something the API
+    layer that creates the row does).
     """
 
     __tablename__ = "branch_index"
+    __table_args__ = (
+        Index("ix_branch_index_repo_branch_created", "repo_id", "branch_name", "created_at"),
+    )
 
     repo_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
     )
     branch_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    head_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    head_sha: Mapped[str | None] = mapped_column(String(40))
     node_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     edge_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     graph_ref: Mapped[str | None] = mapped_column(String(512))
@@ -57,7 +75,7 @@ class BranchIndex(UUIDPrimaryKeyMixin, Base):
     )
 
 
-class IndexUpdateLog(UUIDPrimaryKeyMixin, Base):
+class IndexUpdateLog(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     """Audit trail of every rebuild/incremental-update attempt on a branch index.
 
     `mode` and `reason` are what let you report rebuild frequency as an
