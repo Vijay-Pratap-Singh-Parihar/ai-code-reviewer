@@ -1,4 +1,4 @@
-# Verification — Stages 0–3
+# Verification — Stages 0–4
 
 Reproducible steps for what's already been verified in this branch. Each block is
 copy-pasteable; expected output is noted inline. See [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)
@@ -16,7 +16,7 @@ uv sync --all-packages --group dev
 ```bash
 uv run ruff check .                                                              # → All checks passed!
 uv run mypy packages/engine/src packages/db/src apps/api/src apps/worker/src    # → Success: no issues found
-uv run pytest -v                                                                 # → 52 passed
+uv run pytest -v                                                                 # → 107 passed
 ```
 
 `apps/api/tests/test_models_db.py`, `test_auth.py`, `test_analysis.py`, and
@@ -167,3 +167,98 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/analysis 
   -d "{\"repo_full_name\":\"acme/widgets\",\"head_sha\":\"abc1234\",\"pr_number\":1,\"pr_title\":\"x\",\"diff\":\"x\"}"
 # → 409 (acme/widgets is already registered under the first org)
 ```
+
+## Stage 4 — the repository indexer (library only, no new endpoint)
+
+Everything here runs via `uv run python`, not Docker/curl — Stage 4 is a `packages/engine`
+library addition (`revu.index`), not wired into an API/worker endpoint yet (that's Stage 5).
+
+```bash
+uv run pytest packages/engine/tests/index packages/db/tests -v
+# → 57 passed (54 index unit tests + the 10-hand-verified-edges checks + 3 db-package tests,
+#   the last of which skips instead of failing if TEST_DATABASE_URL isn't reachable)
+```
+
+### Index this repository's own source and inspect the graph
+
+```bash
+uv run python - <<'PY'
+from pathlib import Path
+from revu.index import build_index_at_path
+
+result = build_index_at_path(Path("."))
+print(f"files={result.files_indexed} symbols={len(result.symbols)} "
+      f"nodes={result.node_count} edges={result.edge_count}")
+print(f"resolved calls={len(result.call_edges)} "
+      f"unresolved calls={len([u for u in result.unresolved if u.kind == 'call'])}")
+
+# A real cross-package edge: the worker calling into the Stage 3 reviewer.
+worker_calls = [e for e in result.call_edges if e.caller.startswith("worker.")]
+print(worker_calls[:3])
+PY
+# → files=61 symbols=201 nodes=262 edges=323
+# → resolved calls=166 unresolved calls=779   (see IMPLEMENTATION_PLAN.md Stage 4 for the honest
+#   breakdown of *why* — mostly calls into external libraries and through local variables,
+#   both correctly out of scope for a no-type-inference, name-based resolver)
+```
+
+### The 10 hand-verified call edges
+
+```bash
+uv run pytest packages/engine/tests/index/test_verified_edges.py -v
+```
+
+Each edge in `packages/engine/tests/fixtures/verified_edges.yaml` was confirmed by hand against
+the actual source line (see the `note` field on each entry); the test both resolves all 10 in
+the built graph and independently re-checks that the claimed line still textually contains the
+claimed callee name, so the fixture can't silently drift from the source it describes.
+
+### Timing gate (cold build < 60s, incremental update < 5s, ~50k LOC)
+
+```bash
+uv run pytest packages/engine/tests/index/test_timing.py -v -s
+# → cold build: 45762 LOC, 105 files, 2300 nodes, 2891 edges, ~1.4s
+# → incremental update: 1 file(s) reparsed out of 105, ~0.4s
+```
+
+Uses the installed `pydantic` package (45,762 real LOC) as the ~50k LOC corpus — no bundled
+fixture repo of that size exists, and this avoids a network fetch. See `test_timing.py`'s
+docstring for why `pydantic` specifically.
+
+### Incremental update on a real git repo
+
+```bash
+uv run python - <<'PY'
+import tempfile
+from pathlib import Path
+from git import Repo
+from revu.index import build_index, incremental_update
+
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+    repo_dir = Path(tmp)
+    repo = Repo.init(repo_dir)
+    with repo.config_writer() as cfg:
+        cfg.set_value("user", "name", "Verify")
+        cfg.set_value("user", "email", "verify@example.com")
+
+    (repo_dir / "a.py").write_text("def helper():\n    return 1\n")
+    repo.index.add(["a.py"])
+    old_sha = repo.index.commit("first").hexsha
+    old_result = build_index(repo_dir, old_sha)
+
+    (repo_dir / "a.py").write_text("def helper():\n    return 2\n\ndef new_fn():\n    return helper()\n")
+    repo.index.add(["a.py"])
+    new_sha = repo.index.commit("second").hexsha
+
+    incr = incremental_update(repo_dir, old_sha, new_sha, old_result)
+    print("files reparsed:", incr.files_reparsed)           # → 1
+    print("new symbol present:", "a.new_fn" in {s.qualified_name for s in incr.index.symbols})  # → True
+    repo.close()
+PY
+```
+
+(`ignore_cleanup_errors=True` and the explicit `repo.close()` sidestep a Windows-only GitPython
+quirk where an open repo handle can briefly block deleting its own temp directory on `__exit__`
+— harmless, but worth not lying about in a copy-pasteable snippet. The pytest suite itself is
+unaffected: `tmp_path`'s teardown runs after each test's local `Repo` object is already out of
+scope and garbage-collected.)

@@ -1,0 +1,70 @@
+# 10 hand-verified call relationships in this repository's own source, used
+# by test_verified_edges.py to prove the indexer finds real cross-file call
+# edges, not just synthetic fixtures. Each entry was checked by hand against
+# the actual source line (see `line` — it's the call-site line in `file`,
+# not the callee's definition line) before being added here.
+#
+# `caller`/`callee` are qualified names as the indexer computes them: the
+# module name (matching the real Python import path, since every module
+# below lives under a `<package>/src/` root) plus dotted class/function
+# nesting.
+edges:
+  - caller: api.core.deps.get_current_user
+    callee: api.core.security.decode_access_token
+    file: apps/api/src/api/core/deps.py
+    line: 24
+    note: "get_current_user() calls decode_access_token(credentials.credentials) to validate the bearer token"
+
+  - caller: api.routers.analysis.get_analysis
+    callee: api.services.analysis.get_run_for_org
+    file: apps/api/src/api/routers/analysis.py
+    line: 57
+    note: "GET /analysis/{run_id} handler delegates the org-scoped lookup to the service layer"
+
+  - caller: api.routers.analysis.trigger_analysis
+    callee: api.services.analysis.create_analysis_run
+    file: apps/api/src/api/routers/analysis.py
+    line: 37
+    note: "POST /analysis handler creates the run via the service layer (imported as analysis_service alias)"
+
+  - caller: api.routers.auth.logout
+    callee: api.services.auth.revoke_refresh_token
+    file: apps/api/src/api/routers/auth.py
+    line: 100
+    note: "logout() revokes the presented refresh token via the auth service"
+
+  - caller: api.routers.auth.signup
+    callee: api.services.auth.signup
+    file: apps/api/src/api/routers/auth.py
+    line: 46
+    note: "signup() router handler calls the same-named auth_service.signup()"
+
+  - caller: api.services.auth.signup
+    callee: db.organization.User
+    file: apps/api/src/api/services/auth.py
+    line: 77
+    note: "signup() constructs a new User() row"
+
+  - caller: api.services.auth.signup
+    callee: db.organization.Organization
+    file: apps/api/src/api/services/auth.py
+    line: 73
+    note: "signup() constructs a new Organization() row"
+
+  - caller: api.services.auth._issue_token_pair
+    callee: api.core.security.create_access_token
+    file: apps/api/src/api/services/auth.py
+    line: 51
+    note: "_issue_token_pair() calls create_access_token(user_id=..., org_id=..., role=...)"
+
+  - caller: worker.jobs.analyze.analyze_pr
+    callee: revu.agents.diff_only.review_diff
+    file: apps/worker/src/worker/jobs/analyze.py
+    line: 36
+    note: "the worker job calls the Stage 3 reviewer's review_diff() across the worker/engine package boundary"
+
+  - caller: worker.jobs.analyze.analyze_pr
+    callee: db.pull_request.FindingRecord
+    file: apps/worker/src/worker/jobs/analyze.py
+    line: 47
+    note: "analyze_pr() constructs a FindingRecord() row per finding, across the worker/db package boundary"
