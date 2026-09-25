@@ -654,6 +654,26 @@ npm run test    # → 19 passed
 npm run build   # production build (also what `docker compose build web` runs)
 ```
 
+### Real-browser end-to-end (Playwright)
+
+Requires the stack already running (`docker compose up --build`, or `npm run dev` + the API):
+
+```bash
+cd apps/web
+npx playwright install chromium   # first time only
+npm run test:e2e
+# → 3 passed: root redirects to /login, sign up + reload-survives-session + sign out +
+#   blocked-when-signed-out + log back in, wrong-password shows an inline error
+```
+
+Confirm the test's own cleanup actually ran (it deletes its uniquely-named org in an `afterAll` hook):
+
+```bash
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu \
+  -c "SELECT count(*) FROM organizations WHERE name LIKE 'Playwright E2E%';"
+# → 0
+```
+
 ### Live, against the running containers
 
 ```bash
