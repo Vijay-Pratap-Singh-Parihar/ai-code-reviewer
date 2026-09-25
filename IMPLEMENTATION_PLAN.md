@@ -925,9 +925,78 @@ deleted from the dev database afterward; `npm run test`/`lint`/`build` re-verifi
 Playwright's config/spec files present (Vitest correctly excludes `e2e/**`, Next's own `tsc` step
 correctly type-checks them since they're plain `.ts` files under the project).
 
+## Stage 9 (part 2) — dashboard content and the manual trigger form
+
+**Scope, agreed up front (two decisions, both taken deliberately simple):** (1) `agent="cross_file"`
+requires a separate, manual "build the branch index first" step rather than a combined
+"index-then-review" flow — this matches today's API surface exactly (two endpoints, two triggers)
+without adding orchestration logic for a build that can take longer than an HTTP request should wait
+around for; (2) the dashboard's run list is session-only client state, not backed by a new "list all
+my runs" endpoint — there isn't one yet (today's API only supports fetching a run by its own ID), and
+building one wasn't needed to make this screen useful.
+
+Built:
+
+- `lib/api-client.ts` gained typed wrappers for the rest of the `/analysis` and `/repos/index`
+  surface: `triggerAnalysis`, `getAnalysisRun`, `triggerIndex`, `getBranchIndexStatus` — plus their
+  request/response types (`AnalysisRequest`, `AnalysisRunPublic`, `FindingPublic`,
+  `IndexTriggerRequest`, `BranchIndexPublic`, `BranchIndexStatusPublic`), hand-typed to match the
+  Pydantic schemas exactly rather than guessed at.
+- `components/trigger-index-form.tsx` — the "build a branch index" step (`repo_full_name`,
+  `branch_name`, `repo_path`), a `useMutation` around `triggerIndex`.
+- `components/trigger-analysis-form.tsx` — the full `AnalysisRequest` form, including the `agent`
+  selector (shadcn/Base UI `Select`) with `repo_path` appearing only when `cross_file` is chosen
+  (mirroring the backend's own conditional validation from the pipeline-wiring PR, client-side).
+- `components/run-status-card.tsx` — polls `GET /analysis/{run_id}` via `useQuery`'s
+  `refetchInterval` callback, which reads the *latest fetched* status each tick and returns `false`
+  once it's `succeeded`/`failed` — no separate component state needed to stop polling. Renders
+  tokens/cost/latency and, once available, each finding with a severity badge.
+- `app/(protected)/dashboard/page.tsx` — wires the three together: build-index card, trigger-review
+  card, and a session-only list of `RunStatusCard`s for every run triggered since the page loaded.
+- Added shadcn's `textarea`, `select`, and `badge` components.
+
+**Two real corrupted-package bugs found and fixed, same root cause as Stage 9 part 1's npm-install
+flakiness:** `lucide-react` (a shadcn `Select` dependency) was missing its own bundled `.d.ts` files
+entirely — its `package.json` declares `"typings": "dist/lucide-react.d.ts"` and lists several `.d.ts`
+files under `"files"`, none of which were actually present on disk, despite the package looking
+otherwise installed. Fixed by removing and reinstalling just that one package. Not a real upstream bug
+in `lucide-react` (confirmed the published version, 1.48.0, is real and current) — another casualty of
+this Windows host's earlier npm-install turbulence, caught immediately by `next build`'s own
+`tsc` step rather than shipping silently.
+
+**Tests** (9 new, 28/28 total passing): `trigger-analysis-form.test.tsx` (agent defaults to
+`diff_only` with no `repo_path` sent; the `Select` correctly reveals/requires `repo_path` once
+switched to `cross_file` — needed `@testing-library/user-event` instead of raw `fireEvent.click`,
+since Base UI's `Select` popup items don't respond to a bare synthetic click the way a native
+`<select>` would; server error surfaces inline), `trigger-index-form.test.tsx` (submit shape, error
+display), `run-status-card.test.tsx` (succeeded run with findings, failed run's error message,
+succeeded-with-zero-findings case).
+
+**Not exercised by Playwright, deliberately:** unlike Stage 9 part 1's auth flow (free — no LLM
+involved), actually submitting the trigger-analysis form against a real running stack enqueues a real
+`diff_only` job that a live worker *will* pick up and run against a real, paid LLM the moment it's
+processed — the exact mistake made once already during Stage 8/9's pipeline-wiring verification. No
+end-to-end browser test drives this form against the live stack; coverage stops at the Vitest
+component level (mocked `api-client`), and any future live click-through verification of this screen
+needs the same explicit per-instance permission every other real LLM call in this project has needed.
+
+**Docker verification deferred — a genuine environment failure, not a code issue:** while rebuilding
+the `web` image, the host's C: drive (where Docker Desktop's WSL2 virtual disk lives) was found to be
+completely full (2.2MB free of 237GB), which corrupted `containerd`'s metadata store mid-write —
+`docker compose build` failed with a low-level I/O error, and the *already-running* Postgres container
+started failing its healthchecks the same way (`exec /bin/sh: input/output error`), independent of
+this stage's changes. Stopped immediately rather than attempting `docker system prune` or any other
+destructive Docker/disk cleanup unilaterally — freeing host disk space is the user's call, not an
+agent's. All verification for this stage is therefore `npm run lint`/`test`/`build` only (all clean);
+the Docker image rebuild and live-container check are pending disk space being freed.
+
+Verified: `npm run lint` clean, `npm run test` (**28/28**, 9 new), `npm run build` clean. Docker
+rebuild/live verification pending (see above).
+
 ## Next action
 
-Stage 9 (part 2) — the dashboard content and the manual "trigger analysis" form (replacing true
-onboarding, which needs the GitHub App from Stage 10), including the `agent` selector this stage's
-auth shell has nowhere to live yet. Then Stage 9 (part 3) — the PR analysis view with the diff
-viewer, inline findings, and evidence trail, the single screen the architecture doc calls "never cut."
+Once Docker Desktop is healthy again: rebuild and restart the `web`/`api`/`worker` images, confirm
+Postgres recovers, and live-verify the dashboard renders correctly (page load only — no real form
+submission without explicit permission first, per the LLM-cost rule above). Then Stage 9 (part 3) —
+the PR analysis view with the diff viewer, inline findings, and evidence trail, the single screen the
+architecture doc calls "never cut."
