@@ -739,9 +739,71 @@ this stage**, per its own explicit constraint — every test uses hand-construct
   between. Wiring both `cross_file` and `verify_findings` into that job together is tracked as
   follow-up work, not folded into this stage.
 
+## Pipeline wiring — done
+
+Closes the follow-up Stage 8 left open: `cross_file` and `verify_findings` were fully built but
+never reachable from `POST /analysis` — the worker always ran `diff_only` and persisted its raw
+findings. The design question was the caller's own: does the API auto-escalate from a cheap scan to
+an expensive one, or does the caller decide? Answer, matching the architecture doc's own
+tiered-routing philosophy (§3) and confirmed explicitly before building: **the caller decides,
+per request, with no automatic escalation.** `diff_only` stays the default because it's ~4x cheaper
+per Stage 7's live comparison — nothing here changes that default silently.
+
+**What changed:**
+
+- `AnalysisRequest` (`api.schemas.analysis`) gained `agent: Literal["diff_only", "cross_file"] =
+  "diff_only"` and `repo_path: str | None`. A `model_validator` rejects `agent="cross_file"` with no
+  `repo_path` at the schema layer (422), before any service/DB work runs — `repo_path` follows the
+  same "worker's filesystem, not the caller's" convention `IndexTriggerRequest` already established
+  in Stage 5.
+- `create_analysis_run` (`api.services.analysis`) now looks up the current branch index
+  (`api.services.branch_index.get_current_branch_index`) when `agent="cross_file"` and requires a
+  `ready` row for `(repo, base_branch)` — there is no on-demand indexing fallback. No ready index
+  raises a new `BranchIndexNotReadyError`, mapped to `409 Conflict` by the router (same pattern as
+  the existing `RepositoryOwnedByAnotherOrgError` 409). The resolved index's id is stored on
+  `AnalysisRun.branch_index_id` (the FK has existed unused since Stage 1).
+- `POST /analysis`'s router passes `agent`/`repo_path` through to the enqueued `analyze_pr` job as
+  two new positional args (both optional, so every existing enqueue call/test stays valid).
+- `worker.jobs.analyze.analyze_pr` branches on `agent`. `diff_only` is unchanged. `cross_file` loads
+  the stored graph blob (`revu.index.store.load_graph`) off the run's own `branch_index_id`, calls
+  `revu.agents.cross_file.review_cross_file` with it and the caller-supplied `repo_path` as
+  `repo_root`, then runs the raw findings through Stage 8's `verify_findings` **before** persisting
+  — a tool-calling agent's self-cited evidence is exactly what that verifier exists to catch when
+  fabricated. The verification report (`VerificationReport`, as a plain dict) is stashed onto
+  `AnalysisRun.config_snapshot["verification"]` for visibility — no new column needed, `config_snapshot`
+  is already JSONB. `diff_only` findings are **not** run through the verifier: it needs `repo_root`
+  for evidence resolution, and `diff_only` requests carry no repository access at all (Stage 3's
+  design) — verifying without a repo to check citations against would just drop every finding.
+
+**Tests added** (7 new, all passing): 4 API tests (`apps/api/tests/test_analysis.py`) covering the
+422 (missing `repo_path`), the 409 (no ready index, and asserting nothing was enqueued), and a full
+happy path that seeds a real `ready` `BranchIndex` row through the same `get_db` override
+`test_branch_index.py` uses, then asserts the job is enqueued with the right `agent`/`repo_path`; 3
+worker tests (`apps/worker/tests/test_analyze.py`) covering the `cross_file` dispatch path end to
+end with `review_cross_file`/`load_graph`/`verify_findings` mocked (asserting the verifier's *scored*
+confidence is what gets persisted, not the raw one), plus the two defensive failure paths (`agent=
+"cross_file"` with no `repo_path`, and with no `branch_index_id` on the run).
+
+**A real bug this work introduced and fixed before pushing:** editing `apps/api/src/api/routers/
+analysis.py` and `apps/worker/src/worker/jobs/analyze.py` shifted line numbers that Stage 4's
+hand-verified call-edge fixture (`packages/engine/tests/fixtures/verified_edges.yaml`) pins exactly
+(`get_run_for_org` at old line 57 → 67, `review_diff`/`FindingRecord` at old lines 36/47 → 97/115) —
+caught by `test_hand_verified_call_sites_are_at_the_claimed_line` failing, not silently. Fixed by
+updating the fixture's line numbers to match, not by loosening the test.
+
+Verified: `ruff check .`, `mypy --strict` (77 source files), `pytest` (**273/273**, 7 new) all pass.
+Both Docker images (`api`, `worker`) rebuilt and the containers restarted against the new code. The
+non-LLM parts of the new behavior (422 on missing `repo_path`, 409 on no ready index, default
+`diff_only` still enqueuing) were live-verified with real `curl` calls against the running stack.
+
+**Known limitation, reported honestly:** while live-verifying the default path, the
+`agent="diff_only"` request was picked up by the real worker and made an actual (small, ~$0.0008)
+LLM call — this should have been anticipated and asked about first, per the standing "no LLM calls
+without explicit permission" rule; it wasn't, and is disclosed here rather than left out.
+`agent="cross_file"` was never exercised against a real model — that still requires explicit
+per-instance permission before it's tried.
+
 ## Next action
 
 Stage 9 — the Next.js frontend: auth, dashboard, and the PR analysis view with diff + findings +
-evidence trail. Also open, tracked above rather than folded into Stage 7/8: wiring `cross_file` and
-`verify_findings` into the live `/analysis` pipeline via Stage 5's branch memory, and deciding
-whether `diff_only` stays on as a cheap first-tier screen or is fully replaced.
+evidence trail, including a UI control for the `agent` choice this stage just wired up.

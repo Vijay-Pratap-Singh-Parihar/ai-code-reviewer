@@ -18,7 +18,7 @@ edges:
   - caller: api.routers.analysis.get_analysis
     callee: api.services.analysis.get_run_for_org
     file: apps/api/src/api/routers/analysis.py
-    line: 57
+    line: 67
     note: "GET /analysis/{run_id} handler delegates the org-scoped lookup to the service layer"
 
   - caller: api.routers.analysis.trigger_analysis
@@ -60,11 +60,11 @@ edges:
   - caller: worker.jobs.analyze.analyze_pr
     callee: revu.agents.diff_only.review_diff
     file: apps/worker/src/worker/jobs/analyze.py
-    line: 36
+    line: 97
     note: "the worker job calls the Stage 3 reviewer's review_diff() across the worker/engine package boundary"
 
   - caller: worker.jobs.analyze.analyze_pr
     callee: db.pull_request.FindingRecord
     file: apps/worker/src/worker/jobs/analyze.py
-    line: 47
+    line: 115
     note: "analyze_pr() constructs a FindingRecord() row per finding, across the worker/db package boundary"

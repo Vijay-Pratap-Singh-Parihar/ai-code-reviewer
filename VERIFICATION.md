@@ -590,3 +590,56 @@ evidence; `cross_file` returns one high-confidence (~0.98) finding naming the re
 (`alerts.send_low_stock_alerts`) and the exact runtime failure, with `evidence` pointing at both
 `inventory.py` and `alerts.py` — the files it actually inspected via `find_callers`/`read_file`.
 See `IMPLEMENTATION_PLAN.md`'s Stage 7 section for the exact output from the last real run.
+
+## Pipeline wiring — `agent` selection on `POST /analysis`
+
+```bash
+uv run pytest apps/api/tests/test_analysis.py apps/worker/tests/test_analyze.py -v
+# → 4 new API tests (422 on missing repo_path, 409 on no ready index — asserting nothing is
+#   enqueued — and the happy-path enqueue) + 3 new worker tests (cross_file dispatch through
+#   load_graph/review_cross_file/verify_findings, and the two defensive failure paths)
+```
+
+### Live, against the running containers — the non-LLM parts only
+
+```bash
+docker compose build api worker
+docker compose up -d api worker
+```
+
+`sed` (not `python3`, which this Windows host doesn't have on PATH) pulls fields out of the JSON:
+
+```bash
+SIGNUP=$(curl -s -X POST http://localhost:8000/auth/signup -H "Content-Type: application/json" \
+  -d '{"org_name":"Demo Org","email":"verify-pipeline@example.com","password":"correct-horse-battery"}')
+TOKEN=$(echo "$SIGNUP" | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+
+# 1. agent="cross_file" with no repo_path -> 422 at the schema layer, no DB/enqueue work at all.
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/analysis \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo_full_name":"acme/pipeline-demo","base_branch":"main","head_sha":"abc1234",
+       "pr_number":1,"pr_title":"t","diff":"--- a\n+++ b\n","agent":"cross_file"}'
+# → 422
+
+# 2. agent="cross_file" with repo_path but no ready branch index -> 409, nothing enqueued.
+curl -s -X POST http://localhost:8000/analysis \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo_full_name":"acme/pipeline-demo","base_branch":"main","head_sha":"abc1234",
+       "pr_number":1,"pr_title":"t","diff":"--- a\n+++ b\n","agent":"cross_file",
+       "repo_path":"/tmp/pipeline-demo"}'
+# → 409, "no ready branch index for 'acme/pipeline-demo' @ 'main'; POST /repos/index ..."
+```
+
+**Deliberately not shown here as a live step:** posting a default `agent="diff_only"` request
+against the running stack. Unlike the two checks above, that one *is* picked up by the real worker
+and *does* make a real LLM call the moment it's processed — this was learned the hard way while
+building this section (a stray verification call cost about $0.0008; see IMPLEMENTATION_PLAN.md's
+"Pipeline wiring" section for the honest account). Anyone reproducing this locally should ask
+themselves first, the same way Stage 3/7's live sections require explicit go-ahead before running.
+
+**`agent="cross_file"` end to end** (real branch index + real graph + real model call) isn't
+included here either, for the same reason plus the extra setup Stage 5's section above already
+covers (`POST /repos/index` against a real git repo inside the worker container, waiting for
+`has_ready_index: true`, *then* `POST /analysis` with `agent="cross_file"` and the matching
+`repo_path`) — worth doing once as a real end-to-end check, but only with explicit permission for
+the model call, same as every other real LLM verification in this project.
