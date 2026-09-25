@@ -139,6 +139,108 @@ export async function logout(): Promise<void> {
   await apiFetch("/auth/logout", { method: "POST" });
 }
 
+export type Agent = "diff_only" | "cross_file";
+
+export type FindingPublic = {
+  file_path: string;
+  line_start: number;
+  line_end: number;
+  category: string;
+  severity: "low" | "medium" | "high" | "critical";
+  message: string;
+  confidence: number;
+  agent_name: string;
+};
+
+export type AnalysisRunStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type AnalysisRunPublic = {
+  id: string;
+  status: AnalysisRunStatus;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  latency_ms: number | null;
+  error: string | null;
+  findings: FindingPublic[];
+};
+
+export type AnalysisRequest = {
+  repo_full_name: string;
+  base_branch?: string;
+  head_sha: string;
+  pr_number: number;
+  pr_title: string;
+  pr_body?: string;
+  diff: string;
+  agent?: Agent;
+  repo_path?: string | null;
+};
+
+export function triggerAnalysis(body: AnalysisRequest): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>("/analysis", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getAnalysisRun(runId: string): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}`);
+}
+
+export type IndexTriggerRequest = {
+  repo_full_name: string;
+  branch_name?: string;
+  repo_path: string;
+  target_sha?: string | null;
+  force_full?: boolean;
+};
+
+export type BranchIndexPublic = {
+  id: string;
+  repo_id: string;
+  branch_name: string;
+  head_sha: string | null;
+  status: "pending" | "building" | "ready" | "stale" | "failed";
+  node_count: number;
+  edge_count: number;
+  build_duration_ms: number | null;
+  built_at: string | null;
+  created_at: string;
+};
+
+export type BranchIndexStatusPublic = {
+  repo_id: string;
+  branch_name: string;
+  has_ready_index: boolean;
+  head_sha: string | null;
+  node_count: number;
+  edge_count: number;
+  unresolved_count: number;
+  build_duration_ms: number | null;
+  built_at: string | null;
+  ready_index_id: string | null;
+  is_stale: boolean;
+  latest_attempt_status: string | null;
+  latest_attempt_id: string | null;
+};
+
+export function triggerIndex(body: IndexTriggerRequest): Promise<BranchIndexPublic> {
+  return apiFetchJson<BranchIndexPublic>("/repos/index", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getBranchIndexStatus(
+  repoId: string,
+  branchName: string,
+): Promise<BranchIndexStatusPublic> {
+  return apiFetchJson<BranchIndexStatusPublic>(
+    `/repos/${repoId}/branches/${encodeURIComponent(branchName)}/index`,
+  );
+}
+
 /** Renders an `ApiError` (or any thrown value) as one user-facing line. */
 export function formatApiError(err: unknown): string {
   if (err instanceof ApiError) {
