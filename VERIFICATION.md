@@ -521,6 +521,70 @@ asyncio.run(main())
 PY
 ```
 
+## Stage 8 — the verifier/aggregator (library only, no new endpoint)
+
+Everything here runs via `uv run pytest`, not Docker/curl — Stage 8 is a `packages/engine` library
+addition (`revu.verify`), not wired into an API/worker endpoint yet (tracked as deferred alongside
+wiring `cross_file` itself, per `IMPLEMENTATION_PLAN.md` Stage 7/8).
+
+```bash
+uv run pytest packages/engine/tests/verify -v
+# → 41 passed: dedup (12), evidence resolution (10 + the hand-verified integration test below),
+#   confidence scoring (9), threshold+cap (5), and the full-pipeline orchestrator (4)
+```
+
+### The hand-verified evidence-resolution acceptance check
+
+```bash
+uv run pytest packages/engine/tests/verify/test_evidence_integration.py -v -s
+```
+
+Builds a real index of this repository's own working tree (the shared `real_repo_index`/
+`real_repo_root` fixtures — no new redundant full-repo build), looks up `revu.models.Finding`'s
+real, indexer-reported location, and hand-verifies it by reading the actual file at that line before
+trusting it. Three findings go through `resolve_evidence`:
+
+- one citing that real, hand-confirmed location — **must survive**
+- one citing a file path that has never existed in this repository — **must be dropped**
+- one citing the real file but a line number thousands of lines past its actual length —
+  **must be dropped**
+
+```
+assert result.survived == [real_finding]
+assert result.dropped_count == 2
+assert result.drop_rate == 2 / 3
+```
+
+**What this proves, stated honestly:** the resolution mechanism itself correctly distinguishes a
+genuine citation from a fabricated one against real data. It does **not** measure real-world
+hallucination rates from an actual model — no LLM call is made anywhere in Stage 8 (forbidden by
+this stage's own constraint; see `IMPLEMENTATION_PLAN.md`).
+
+### Dedup, confidence, and threshold/cap on hand-constructed findings
+
+```bash
+uv run pytest packages/engine/tests/verify/test_dedup.py packages/engine/tests/verify/test_confidence.py \
+  packages/engine/tests/verify/test_rank.py -v
+```
+
+Confirms, with hand-picked `Finding` objects (no real graph needed): two overlapping findings from
+different agents merge into one with both messages preserved and evidence combined; genuinely
+distinct findings (different file, different category, or lines too far apart) are never merged; a
+finding two independent findings agreed on scores at least as confident as either alone; a finding
+that lost evidence to resolution never outscores one that kept all of it; and the severity+confidence
+cap never discards a critical finding to make room for a low-severity one.
+
+### The full pipeline end to end
+
+```bash
+uv run pytest packages/engine/tests/verify/test_init.py -v
+```
+
+`verify_findings` wired end to end on hand-constructed findings against a real temp repo: two
+agreeing findings merge and score higher than either alone; a finding with one fabricated evidence
+item is dropped and the report's `evidence_drop_rate` reflects it; `VerificationConfig`'s `threshold`
+and `max_findings` are honoured and reported via `dropped_below_threshold`/`cut_by_cap`.
+
 Expected: `diff_only` returns a few speculative findings around confidence 0.7 with no cited
 evidence; `cross_file` returns one high-confidence (~0.98) finding naming the real caller
 (`alerts.send_low_stock_alerts`) and the exact runtime failure, with `evidence` pointing at both

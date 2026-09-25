@@ -23,7 +23,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 5 | Branch memory: `branch_index` / `index_update_log` tables live, staleness states, force-push → full rebuild detection, merge-base resolution (triggered via API call, not a real push webhook yet) | App Week 16 + Phase 3 incremental design | ✅ done |
 | 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | ✅ done |
 | 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | ✅ done |
-| 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | Not started |
+| 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | ✅ done |
 | 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | Not started |
 | 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 | App Week 15 | Not started |
 | 11 | Remaining screens: providers, usage/budget, branch memory UI, comment-posting back to GitHub | App Week 18 | Not started |
@@ -625,9 +625,123 @@ something to decide implicitly while finishing an agent-building stage.
 
 Verified: `ruff check .`, `mypy --strict` (73 files), and `pytest` (**225/225**) all pass.
 
+## Stage 8 — done
+
+**Scope adaptation, stated up front (same pattern as Stage 6 and Stage 7):** the original Phase 6
+spec calls for `scripts/sweep_threshold.py`, sweeping threshold tau and plotting a precision/recall
+curve against benchmark ground truth. That does not apply here — `IMPLEMENTATION_PLAN.md`'s
+"Explicitly not covered" section documents that this app-first track dropped the entire
+benchmarking harness; there is no ground-truth dataset to sweep tau against, and none was built.
+The gate for this stage instead is a well-tested verifier library validated by **hand-constructed
+cases that prove each mechanism actually works**, with one case carrying the rigor of Stage 4's "10
+hand-verified call edges": a real, hand-verified test proving the evidence-resolution step genuinely
+catches a fabricated citation against this repository's own real indexed graph.
+
+Built `packages/engine/src/revu/verify/`, four modules in pipeline order plus one entry point:
+
+- **`dedup.py`** — fuzzy-matches findings on (file, overlapping/close line range, category) and
+  merges each cluster. Designed to operate on findings from potentially multiple source agents at
+  once (per the architecture doc's multi-agent aggregation framing — "multi-review aggregation
+  lifted F1 by up to 43.67%"), even though today's only real callers (`diff_only`, `cross_file`)
+  each produce one agent's findings at a time. Returns `MergedFinding` (the merged `Finding` plus
+  `source_count`/`source_agent_names`/`source_confidences`), not a plain `list[Finding]` — `Finding`
+  has a single `agent_name: str` field with no room to record "N agents agreed," and Stage 8's
+  confidence scoring needs exactly that count.
+  **`agent_name` merge convention (the task's own open judgment call):** the merged finding's
+  `agent_name` becomes the sorted, de-duplicated set of contributing agent names joined with `"+"`
+  (e.g. `"cross_file+diff_only"`), collapsing to the single unchanged name when only one agent
+  contributed (including two overlapping findings from the *same* agent in one run). Chosen over
+  "keep the first" because the joined string is itself a visible agreement signal a UI can render
+  directly, and it doesn't require inventing a new field on the shared `Finding` contract.
+  Messages are combined, not discarded, per the roadmap's explicit instruction: a single source's
+  message passes through unchanged; multiple sources' distinct wordings are numbered and kept in
+  full (`"Corroborated by N independent findings:\n1. ...\n2. ..."`), with exact-duplicate text
+  collapsed. Evidence lists are concatenated and exact-duplicate items removed.
+- **`evidence.py`** — resolves every finding's own location and every evidence item's location
+  against the real repository on disk, reusing `revu.agents.tools.read_file`'s already-tested safety
+  patterns (path-escape checks, `OSError` handling) rather than reimplementing them — the one thing
+  added on top is treating a requested line range that exceeds the file's actual `total_lines` as
+  unresolved, since `read_file` itself *clamps* an out-of-range end line (the right behaviour for an
+  agent tool, the wrong one for a hallucination check). **Drop-by-default semantics:** a finding is
+  dropped if *either* its own location or *any one* of its evidence items fails to resolve — not
+  just its own location — on the reasoning that a finding citing even one fabricated piece of
+  evidence has already shown its citations can't be trusted. A `mode="flag"` alternative exists
+  (never drops or mutates, just annotates the report) for a caller that wants visibility without data
+  loss; the live pipeline uses `"drop"`. The drop rate is returned as real data
+  (`EvidenceResolutionResult.drop_rate`), not just logged, per the task's explicit requirement.
+- **`confidence.py`** — recomputes each finding's confidence as a weighted sum of the source
+  agent(s)' own reported confidence (mean across merged sources, not max — one overconfident lone
+  agent shouldn't dominate a merged cluster), an evidence-survival ratio, and an agreement score
+  (`1 - 1/source_count`, so a second corroborating finding matters a lot and a tenth matters little
+  on the margin). **Weights (0.5 / 0.2 / 0.3) are chosen, not tuned against any benchmark** — the
+  same honesty `revu.context.rank.RankWeights` documented for its own weights in Stage 6, since no
+  ground-truth dataset exists in this track to tune against. Agreement is weighted above evidence
+  survival specifically because the architecture doc's own literature mapping cites multi-review
+  aggregation as one of the strongest empirical precision levers in this space.
+- **`rank.py`** — drops findings below a configurable threshold tau, sorts by (severity, then
+  confidence), then caps at a configurable N. Severity is checked before confidence in the sort key
+  specifically so the cap can never discard a critical finding to make room for a merely-confident
+  low-severity one — verified by a dedicated test.
+- **`verify_findings`** (`verify/__init__.py`) — the single entry point, matching
+  `review_diff`/`review_cross_file`/`build_context_bundle`'s "one function, plain keyword
+  configuration" shape: `verify_findings(findings, *, repo_root, config=None) -> VerificationResult`.
+  `VerificationResult` carries the final `findings` plus a `VerificationReport` (`findings_in`,
+  `findings_after_dedup`, `merged_count`, `evidence_drop_rate`, `evidence_dropped_count`,
+  `dropped_below_threshold`, `cut_by_cap`, `findings_out`) — real, inspectable counts a caller or a
+  future UI can use, not log lines to be scraped.
+
+**The hand-verified acceptance check**
+(`packages/engine/tests/verify/test_evidence_integration.py`): builds a real index of this
+repository's own working tree (the shared `real_repo_index`/`real_repo_root` fixtures from Stage 7's
+`conftest.py` — no new redundant full-repo build added), looks up `revu.models.Finding`'s real,
+indexer-reported location, and **hand-verifies it by reading the actual file at that line** before
+trusting it (`assert "class Finding" in claimed_line`) — not accepted by construction. Three findings
+are run through `resolve_evidence`: one citing that real, hand-confirmed location; one citing a file
+path that has never existed in this repository; one citing the real file but a line number 5,000+
+lines past its actual length. **Result: the real citation survives, both fabricated ones are
+dropped, and the reported drop rate is exactly 2/3** — confirmed by assertion, not eyeballed.
+**What this does and does not prove, stated honestly:** it proves the resolution mechanism itself
+works correctly against real data — a real citation resolves, a fabricated one doesn't, and the
+drop rate reflects that exactly. It says **nothing** about real-world hallucination rates from an
+actual model, since generating one would require a real LLM call, which this stage is explicitly
+forbidden from making.
+
+**No real bugs found while building this stage** (unlike Stages 4/5/6/7, each of which turned up at
+least one) — worth reporting honestly rather than inventing drama: this stage is pure post-processing
+over already-validated `Finding` objects with no external state (no git, no tree-sitter, no network),
+so the main risk surface was getting the merge/scoring *logic* right, which the 40 hand-constructed
+unit tests plus the one real-graph integration test were enough to shake out during development
+without any surprises surviving to the final run.
+
+Verified: `ruff check .`, `mypy --strict` (77 source files), and `pytest` (**266/266**, 41 new) all
+pass. This is a pure `packages/engine` library addition — no new API endpoints, no worker changes,
+no Docker rebuild needed, matching Stages 4 and 6's precedent. **No LLM API calls made anywhere in
+this stage**, per its own explicit constraint — every test uses hand-constructed `Finding`/
+`EvidenceItem` objects and/or a real (non-LLM) indexed graph.
+
+**Known limitations, reported honestly:**
+- `dedup.py`'s clustering is a single greedy left-to-right sweep per (file, category) group, not a
+  full interval-graph/connected-components algorithm — correct for the overlap-chain cases this
+  stage tests (including a 3-finding transitive chain), but a pathological interleaving of clusters
+  with different categories on the same lines is untested territory; no such case has come up in
+  practice since real findings are grouped by category first.
+- Because the default pipeline drops a finding entirely on any unresolved evidence item, a *kept*
+  finding always has 100% evidence survival in practice — the `evidence_survival` term in
+  `confidence.py` only visibly differentiates scores when a caller uses `evidence.py` directly in
+  `mode="flag"` (or synthesizes the survived/total counts itself), not through the default
+  `verify_findings` pipeline. This is an honest emergent consequence of choosing "drop the whole
+  finding" as the stricter, more defensible hallucination-catching default, not an oversight — the
+  confidence-scoring unit tests exercise the term directly with hand-picked survived/total numbers
+  rather than only through the full pipeline.
+- Not wired into the live `/analysis` pipeline, same deliberate deferral as `cross_file` itself
+  (Stage 7's "Deliberately not done" note) — `worker/jobs/analyze.py` still calls `diff_only`
+  directly and persists its raw findings with no dedup/evidence/confidence/threshold step in
+  between. Wiring both `cross_file` and `verify_findings` into that job together is tracked as
+  follow-up work, not folded into this stage.
+
 ## Next action
 
-Stage 8 — the verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring,
-threshold + comment cap. Also open, tracked above rather than folded into Stage 7: wiring
-`cross_file` into the live `/analysis` pipeline via Stage 5's branch memory, and deciding whether
-`diff_only` stays on as a cheap first-tier screen or is fully replaced.
+Stage 9 — the Next.js frontend: auth, dashboard, and the PR analysis view with diff + findings +
+evidence trail. Also open, tracked above rather than folded into Stage 7/8: wiring `cross_file` and
+`verify_findings` into the live `/analysis` pipeline via Stage 5's branch memory, and deciding
+whether `diff_only` stays on as a cheap first-tier screen or is fully replaced.
