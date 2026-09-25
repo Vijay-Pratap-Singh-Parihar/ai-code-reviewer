@@ -231,6 +231,37 @@ actual gate — a real, live, cost-approved comparison against `diff_only` on a 
 `diff_only` produced 3 speculative findings (confidence 0.7, no caller identified); `cross_file`
 found the exact real caller and the exact runtime failure at confidence 0.98. Total cost: $0.031.
 
+## Verifier / aggregator (Stage 8)
+
+`revu.verify` (`packages/engine/src/revu/verify/`) post-processes a list of `Finding`s from one or
+more agents: dedup near-duplicates, drop findings whose cited location(s) don't actually exist in
+the repository (the hallucination check), recompute confidence from agent agreement + evidence
+survival, then threshold and cap. Plain importable library, one entry point, not wired into the
+live `/analysis` pipeline yet:
+
+```python
+from pathlib import Path
+from revu.verify import verify_findings, VerificationConfig
+
+result = verify_findings(
+    findings,  # list[Finding], from one or more agents
+    repo_root=Path("/path/to/a/repo"),
+    config=VerificationConfig(threshold=0.5, max_findings=20),
+)
+print(result.report)          # counts in/out, merge count, evidence drop rate, threshold/cap cuts
+print([f.message for f in result.findings])
+```
+
+No benchmark-driven precision/recall curve over threshold exists in this track (see
+`IMPLEMENTATION_PLAN.md` Stage 8 for why) — the evidence-resolution mechanism is instead validated
+by a hand-verified case against this repository's own real indexed graph: a finding citing a real,
+hand-confirmed location survives, one citing a fabricated file path or an out-of-range line number
+is correctly dropped, and the reported drop rate reflects it exactly.
+
+```bash
+uv run pytest packages/engine/tests/verify/test_evidence_integration.py -v
+```
+
 ## Status
 
 Build order and what's covered vs. deferred from the original roadmap: see
