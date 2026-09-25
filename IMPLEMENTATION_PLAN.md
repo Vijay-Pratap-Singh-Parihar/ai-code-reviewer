@@ -22,7 +22,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 4 | Basic Python indexer: git worktree checkout, file walker, tree-sitter symbols, import edges, name-based call edges, `rustworkx` graph, Postgres persistence, incremental update | Roadmap Phase 3 | ✅ done |
 | 5 | Branch memory: `branch_index` / `index_update_log` tables live, staleness states, force-push → full rebuild detection, merge-base resolution (triggered via API call, not a real push webhook yet) | App Week 16 + Phase 3 incremental design | ✅ done |
 | 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | ✅ done |
-| 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | Not started |
+| 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | ✅ done |
 | 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | Not started |
 | 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | Not started |
 | 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 | App Week 15 | Not started |
@@ -531,10 +531,103 @@ Verified: `ruff check .`, `mypy --strict`, and `pytest` (**187/187**, 42 new) al
 `packages/engine` library addition — no new API endpoints, no worker changes, no Docker rebuild
 needed, matching Stage 4's precedent. No LLM or embedding API calls made anywhere in this stage.
 
+## Stage 7 — done
+
+Built collaboratively with the user, per the roadmap's own instruction that agent decomposition and
+prompt content are "keep yourself," not delegate — every design decision below was made with them,
+not for them.
+
+**Tools** (`packages/engine/src/revu/agents/tools/`): `read_file`, `graph_query`, `find_definition`,
+`find_callers` — matching this track's Stage 7 scope exactly (`git_log`/`run_semgrep` from the
+original roadmap's fuller list are tied to agents not built in this track). Each is a plain,
+stateless, Pydantic-in/Pydantic-out function; `call_tool`'s dispatcher never raises on a model's bad
+tool name or malformed arguments, returning a structured `{"error": ...}` instead. `find_callers`
+reuses Stage 6's `bounded_expand` rather than reimplementing traversal. A real rustworkx gotcha
+caught while building `graph_query`: `get_edge_data`/`successor_indices` silently collapse multiple
+edges between the same node pair (e.g. a function calling the same callee twice, at different
+lines) down to one — fixed by using `out_edges`/`in_edges` instead, with a regression test.
+
+**The agent** (`revu.agents.cross_file.review_cross_file`): a Principal-Software-Architect-persona
+reviewer (the user's framing, verbatim in the system prompt) whose stated job is narrow — defects
+visible only by looking *beyond* the diff, not issues already visible from the diff text alone.
+Orchestrated with **LangGraph** (the user's explicit choice after we established a manual
+tool-calling loop would cost identically in API terms — LangGraph is the base later agents in this
+layer can share without a rewrite; it's used purely for graph/state orchestration, not as a reason
+to adopt a LangChain chat-model wrapper — `revu.providers.llm.complete` still makes every actual
+model call). **Seeded with Stage 6's context bundle** rather than exploring from zero — a deliberate
+choice tied directly to `Product_Architecture_FullStack.md`'s own literature review, which flags
+pure agentic exploration as high-precision/low-recall and prone to "exploration drift"; tools exist
+for verification and follow-up beyond the seed, not as the primary discovery mechanism. **8-round
+tool-call cap** (the user's number, after discussing and rejecting both "no limit" and a stricter
+default) — hitting it while the model still wants a tool sets `RunResult.stopped_reason`
+(`"max_tool_rounds_reached (8)"`) rather than forcing a low-confidence answer; a second
+`stopped_reason` (`"final_answer_malformed_after_retry"`) covers the JSON-repair-retry-also-failed
+case. Every round's tokens/cost/latency are summed and returned uncapped, per the user's request to
+surface real spend in the UI later rather than silently limiting it now.
+
+**`RunResult.stopped_reason`** (new field on the Stage 1 shared contract): `None` means a real
+verdict was reached; a set reason means the agent ran out of investigation budget or couldn't
+produce valid output. This is explicitly *not* wired to any "re-run to continue" action yet — no API
+endpoint or UI surfaces it — it exists so that wiring has something concrete to key off of when the
+UI (Stage 9) or the pipeline needs it, without another contract change then.
+
+**Verification — three layers, matching Stages 4–6's rigor:**
+1. 30 tool tests + 7 loop-logic tests (`test_cross_file.py`), all mocked (no network, no API key) —
+   round-cap handling, retry-on-malformed-JSON, unknown-tool/bad-argument handling, token accounting
+   summed across rounds.
+2. One hand-verified integration test (`test_cross_file_integration.py`): a *real* index of this
+   repo, *real* tools, driven by a scripted "smart" fake LLM that behaves like a genuine tool-calling
+   agent (requests `find_callers`, reads the real caller it found, cites it as evidence) — proving the
+   wiring end to end without spending money or needing a non-deterministic real call to assert
+   against. Two real bugs were caught and fixed building this test itself: a lazy `raw_arguments="{}"`
+   placeholder that silently dropped tool call arguments (only `raw_arguments`, not the separate
+   `arguments` field, actually flows through the message pipeline — matching how a real provider's
+   wire format works), and a `parents[N]` path-depth miscalculation from copying a constant out of a
+   test file one directory level deeper.
+3. **A real, live, user-approved comparison against an actual model** (`claude-sonnet-5`), on a
+   hand-built two-file demo repo with a genuine cross-file bug (a function's return type changes from
+   `list[Item]` to `dict[str, int]`; its one real caller still does `for item in ...: item.name`,
+   which breaks — dict iteration yields string keys, not `Item` objects). Total cost **$0.031**:
+   - `diff_only` (no repo access): 3 findings, all correctly *suspicious* but unable to confirm
+     anything — "breaking any caller that relies on other Item attributes," confidence 0.7, no caller
+     identified, no evidence.
+   - `cross_file`: **1 finding**, confidence **0.98**, naming the exact real caller
+     (`alerts.send_low_stock_alerts`) it found via `find_callers` + `read_file`, and the exact runtime
+     failure (`AttributeError: 'str' object has no attribute 'name'`).
+
+   This is the roadmap's stated Phase 5 gate — "cross-file agent beats diff-only baseline on
+   repo-level recall" — checked with a real model on a hand-picked case, not a benchmark (this track
+   has none; see Stage 6's scope-adaptation note), and confirmed decisively.
+
+**A real test-suite performance bug found and fixed along the way, unrelated to the agent itself:**
+three test files (Stage 4's hand-verified-edges check, Stage 6's integration test, Stage 7's
+integration test) each independently called `build_index_at_path` on this entire repository — full
+tree-sitter parsing of 60+ files — and Stage 6's own file did it once *per test function* on top of
+that: **nine redundant full-repo builds per test run**. Fixed with a session-scoped `real_repo_index`
+fixture in a new `packages/engine/tests/conftest.py`, shared by all three files (Stage 4's
+`test_timing.py` deliberately keeps building its own — measuring a fresh build's cold-start time is
+that test's entire point). Effect: `packages/engine/tests` dropped from ~50s to ~28.5s, a ~45%
+reduction, with all tests still passing.
+
+**Deliberately not done — a scoped-out decision, not an oversight:** the live `/analysis` API
+pipeline still hardcodes `diff_only` in `worker/jobs/analyze.py` and has no repo-checkout/graph step
+at all. Wiring `cross_file` in for real means connecting an analysis trigger to an already-indexed
+branch (`AnalysisRun.branch_index_id`, defined since Stage 1, still unused) — loading its stored
+graph blob, getting the worker a repo checkout to read files from. Discussed explicitly with the
+user and deferred to a separate follow-up rather than folded into this PR, because: it's a distinct
+feature (real plumbing, not a loose end of "build the agent"), it mirrors this codebase's established
+pattern of shipping a capability unwired for a later stage to consume (Stage 5 left
+`resolve_pr_merge_base` fully tested with zero callers, for Stage 6), and — most importantly —
+`cross_file` costs roughly 4x more per run than `diff_only` in the live comparison above, so silently
+flipping the *default* reviewer for every future real trigger is a cost/product decision the
+architecture doc's own tiered-routing philosophy (§3) says deserves its own explicit review, not
+something to decide implicitly while finishing an agent-building stage.
+
+Verified: `ruff check .`, `mypy --strict` (73 files), and `pytest` (**225/225**) all pass.
+
 ## Next action
 
-Stage 7 — the cross-file agent and tool layer, replacing `diff_only` as the default reviewer. This is
-the first stage since Stage 3 that makes live LLM calls, and per the roadmap the agent decomposition
-and prompt design are explicitly something to "keep yourself" rather than delegate — **the user has
-said this stage is done together, not autonomously**, both for the design decisions involved and
-because it spends real money against their paid API key.
+Stage 8 — the verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring,
+threshold + comment cap. Also open, tracked above rather than folded into Stage 7: wiring
+`cross_file` into the live `/analysis` pipeline via Stage 5's branch memory, and deciding whether
+`diff_only` stays on as a cheap first-tier screen or is fully replaced.

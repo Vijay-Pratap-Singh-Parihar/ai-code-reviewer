@@ -84,6 +84,15 @@ class ContextBundle(BaseModel):
 class RunResult(BaseModel):
     """What a completed analysis run produced. The worker persists this into
     `analysis_runs` / `findings` / `context_bundles` rows.
+
+    `stopped_reason` is `None` when the agent reached a real verdict. A set
+    value (e.g. "max_tool_rounds_reached") means it ran out of investigation
+    budget before producing one — `findings` may be incomplete, not a
+    confident "nothing wrong here". Stage 7's cross-file agent is the first
+    caller that can set this; a caller-facing "re-run to continue" action
+    (surfaced through the API/UI) is intentionally not built yet — this
+    field exists so that wiring has something concrete to key off of later
+    without another contract change.
     """
 
     findings: list[Finding] = Field(default_factory=list)
@@ -92,3 +101,4 @@ class RunResult(BaseModel):
     tokens_out: int = 0
     cost_usd: float = 0.0
     latency_ms: int = 0
+    stopped_reason: str | None = None

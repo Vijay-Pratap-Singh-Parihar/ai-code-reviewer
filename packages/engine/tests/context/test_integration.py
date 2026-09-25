@@ -41,9 +41,8 @@ consume.
 from pathlib import Path
 
 from revu.context.bundle import RetrievalConfig, build_context_bundle
-from revu.index.graph import build_index_at_path
+from revu.index.graph import IndexResult
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
 CHANGED_FILE = "apps/api/src/api/services/repositories.py"
 CALLER_FILE = "apps/api/src/api/services/branch_index.py"
 IMPORTER_ONLY_FILE = "apps/api/src/api/services/analysis.py"
@@ -70,16 +69,14 @@ diff --git a/{CHANGED_FILE} b/{CHANGED_FILE}
 """
 
 
-def _build_real_graph() -> object:
-    return build_index_at_path(REPO_ROOT).graph
-
-
-def test_bundle_includes_the_real_resolved_caller_file() -> None:
-    graph = _build_real_graph()
+def test_bundle_includes_the_real_resolved_caller_file(
+    real_repo_root: Path, real_repo_index: IndexResult
+) -> None:
+    graph = real_repo_index.graph
     bundle = build_context_bundle(
         DIFF_TEXT,
         graph,
-        REPO_ROOT,
+        real_repo_root,
         config=RetrievalConfig(k=1, token_budget=20_000),
     )
 
@@ -95,14 +92,16 @@ def test_bundle_includes_the_real_resolved_caller_file() -> None:
     assert bundle.total_tokens <= 20_000
 
 
-def test_k_zero_excludes_the_caller_that_k_one_includes() -> None:
-    graph = _build_real_graph()
+def test_k_zero_excludes_the_caller_that_k_one_includes(
+    real_repo_root: Path, real_repo_index: IndexResult
+) -> None:
+    graph = real_repo_index.graph
 
     bundle_k0 = build_context_bundle(
-        DIFF_TEXT, graph, REPO_ROOT, config=RetrievalConfig(k=0, token_budget=20_000)
+        DIFF_TEXT, graph, real_repo_root, config=RetrievalConfig(k=0, token_budget=20_000)
     )
     bundle_k1 = build_context_bundle(
-        DIFF_TEXT, graph, REPO_ROOT, config=RetrievalConfig(k=1, token_budget=20_000)
+        DIFF_TEXT, graph, real_repo_root, config=RetrievalConfig(k=1, token_budget=20_000)
     )
 
     files_k0 = {item.file_path for item in bundle_k0.items}
@@ -114,7 +113,9 @@ def test_k_zero_excludes_the_caller_that_k_one_includes() -> None:
     assert CHANGED_FILE in files_k1
 
 
-def test_restricting_to_imports_only_drops_the_calls_only_caller() -> None:
+def test_restricting_to_imports_only_drops_the_calls_only_caller(
+    real_repo_root: Path, real_repo_index: IndexResult
+) -> None:
     """The seed node for this diff is the *function* symbol
     (`get_or_create_repository`), not its module - so an `imports`-only
     traversal from it has no edges to follow at all (import edges connect
@@ -123,18 +124,18 @@ def test_restricting_to_imports_only_drops_the_calls_only_caller() -> None:
     toggle working end to end against the real graph, not just the
     synthetic one in `test_traverse.py`.
     """
-    graph = _build_real_graph()
+    graph = real_repo_index.graph
 
     calls_only = build_context_bundle(
         DIFF_TEXT,
         graph,
-        REPO_ROOT,
+        real_repo_root,
         config=RetrievalConfig(k=2, edge_kinds=frozenset({"calls"}), token_budget=20_000),
     )
     imports_only = build_context_bundle(
         DIFF_TEXT,
         graph,
-        REPO_ROOT,
+        real_repo_root,
         config=RetrievalConfig(k=2, edge_kinds=frozenset({"imports"}), token_budget=20_000),
     )
 
@@ -142,14 +143,16 @@ def test_restricting_to_imports_only_drops_the_calls_only_caller() -> None:
     assert CALLER_FILE not in {item.file_path for item in imports_only.items}
 
 
-def test_budget_respected_and_larger_budget_does_not_shrink_bundle() -> None:
-    graph = _build_real_graph()
+def test_budget_respected_and_larger_budget_does_not_shrink_bundle(
+    real_repo_root: Path, real_repo_index: IndexResult
+) -> None:
+    graph = real_repo_index.graph
 
     tiny = build_context_bundle(
-        DIFF_TEXT, graph, REPO_ROOT, config=RetrievalConfig(k=2, token_budget=200)
+        DIFF_TEXT, graph, real_repo_root, config=RetrievalConfig(k=2, token_budget=200)
     )
     generous = build_context_bundle(
-        DIFF_TEXT, graph, REPO_ROOT, config=RetrievalConfig(k=2, token_budget=50_000)
+        DIFF_TEXT, graph, real_repo_root, config=RetrievalConfig(k=2, token_budget=50_000)
     )
 
     assert tiny.total_tokens <= 200

@@ -11,9 +11,8 @@ hand against the actual source line before being added there.
 from pathlib import Path
 
 import yaml
-from revu.index.graph import build_index_at_path
+from revu.index.graph import IndexResult
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "fixtures" / "verified_edges.yaml"
 
 
@@ -29,10 +28,9 @@ def test_ten_hand_verified_edges_file_has_at_least_ten_entries() -> None:
     assert len(edges) >= 10
 
 
-def test_all_hand_verified_call_edges_resolve_in_the_graph() -> None:
+def test_all_hand_verified_call_edges_resolve_in_the_graph(real_repo_index: IndexResult) -> None:
     edges = _load_verified_edges()
-    result = build_index_at_path(REPO_ROOT)
-    resolved_pairs = {(e.caller, e.callee) for e in result.call_edges}
+    resolved_pairs = {(e.caller, e.callee) for e in real_repo_index.call_edges}
 
     failures = []
     for entry in edges:
@@ -45,14 +43,14 @@ def test_all_hand_verified_call_edges_resolve_in_the_graph() -> None:
     )
 
 
-def test_hand_verified_call_sites_are_at_the_claimed_line() -> None:
+def test_hand_verified_call_sites_are_at_the_claimed_line(real_repo_root: Path) -> None:
     """Belt-and-braces: confirm the call site really is on the recorded line
     in the recorded file, so the fixture can't silently drift from the
     source it claims to describe.
     """
     edges = _load_verified_edges()
     for entry in edges:
-        file_path = REPO_ROOT / str(entry["file"])
+        file_path = real_repo_root / str(entry["file"])
         lines = file_path.read_text(encoding="utf-8").splitlines()
         line_text = lines[int(entry["line"]) - 1]
         callee_short_name = str(entry["callee"]).rsplit(".", 1)[-1]
