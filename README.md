@@ -294,12 +294,62 @@ cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL, for `npm run dev`
 npm install
 npm run dev     # http://localhost:3000 — needs the API on :8000 (docker compose up -d api or `uv run uvicorn ...`)
 npm run test    # Vitest + React Testing Library, 19 tests
+npm run test:e2e # Playwright, real browser — see "Manual and automated UI testing" below
 npm run build   # production build; also what `docker compose build web` runs
 ```
 
 Onboarding (installing the GitHub App, picking repositories) isn't buildable yet — Stage 10 — so the
 next PR adds a manual "trigger analysis" form against the existing endpoints instead, matching this
 project's running theme of app-first simplification over the original roadmap's ordering.
+
+## Manual and automated UI testing
+
+### 1. Bring the stack up
+
+```bash
+docker compose up --build
+```
+
+Wait for all five containers to report healthy/running (`docker compose ps`), then open
+**http://localhost:3000** — it redirects to `/login` since nothing is signed in yet.
+
+### 2. Manually test it from the browser
+
+1. On the login page, click **Sign up**.
+2. Fill in an organization name, an email, and a password (min. 8 characters) — anything
+   made up works, e.g. `Acme Inc` / `you@example.com` / `correct-horse-battery` — and submit.
+3. You land on **/dashboard**, and the top bar shows the email you just signed up with.
+4. Reload the page (F5). You stay on the dashboard — the session survives a reload because it's
+   recovered from the backend's `HttpOnly` refresh cookie, not from anything readable by JavaScript.
+5. Click **Sign out** in the top bar. You're returned to `/login`.
+6. Try navigating directly to `http://localhost:3000/dashboard` while signed out — you're bounced
+   back to `/login`, not shown a flash of the dashboard.
+7. Log back in with the same email/password from step 2. You land back on `/dashboard`.
+8. Try logging in with the right email but a wrong password — the form shows
+   *"invalid email or password"* inline and does not navigate away.
+
+Everything above talks to the real API (no mocks) — the org/user you create is a real row in the
+dev Postgres database. Clean it up afterward if you like:
+
+```bash
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM organizations WHERE name = 'Acme Inc';"
+```
+
+### 3. Or run the same walkthrough as an automated Playwright test
+
+`apps/web/e2e/auth.spec.ts` drives a real Chromium browser through exactly the steps above (sign up,
+reload-survives-session, sign out, blocked-when-signed-out, log back in, wrong-password error) against
+whichever stack is running at `http://localhost:3000` — it creates its own uniquely-named
+organization per run and deletes it again in an `afterAll` hook, so it's safe to re-run repeatedly.
+
+```bash
+cd apps/web
+npx playwright install chromium   # first time only
+npm run test:e2e
+```
+
+Point it at a different stack (e.g. `npm run dev` on a non-default port) with
+`PLAYWRIGHT_BASE_URL=http://localhost:3001 npm run test:e2e`.
 
 ## Status
 

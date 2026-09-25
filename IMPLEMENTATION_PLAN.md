@@ -895,6 +895,36 @@ fix both work, independent of the host-side slowness.
 Verified: `npm run lint`, `npm run test` (19/19), `npm run build`, and `docker compose build web` all
 pass. `docker compose up -d web` restarted against the new image; live-verified as described above.
 
+## Stage 9 (part 1, follow-up) — real-browser Playwright coverage
+
+The auth flow above was curl-verified (real HTTP contract) and Vitest-verified (component logic with
+mocked `fetch`), but neither proves the actual browser behavior the in-memory-token design depends
+on: that a page reload really does recover the session from the `HttpOnly` cookie via the silent
+refresh call, in a real browser, with real cookie jar semantics. `apps/web/e2e/auth.spec.ts`
+(Playwright, Chromium) closes that gap: root-redirects-to-login when signed out; sign up → land on
+`/dashboard` → **reload the page** → still on `/dashboard` (the actual claim under test) → sign out →
+direct navigation to `/dashboard` bounces back to `/login` → log back in → wrong password shows the
+inline error and doesn't navigate. Runs against whatever stack is already up at `baseURL`
+(`http://localhost:3000` by default, overridable via `PLAYWRIGHT_BASE_URL`) rather than starting its
+own server, since the point is exercising the real Docker-built app and API, not a mocked one. Creates
+one uniquely-named organization per run and deletes it in an `afterAll` hook — safe to re-run.
+
+**A real test bug found and fixed:** the first run's "wrong password" assertion used
+`page.getByRole("alert")`, which matched *two* elements — the form's own error message and, inside
+Next.js's App Router, an accessibility route announcer div that also carries `role="alert"`. Fixed by
+matching the error text directly instead of by role.
+
+Also added: `npm run test:e2e` script, `apps/web/.gitignore` entries for Playwright's
+`test-results`/`playwright-report` output, and a "Manual and automated UI testing" section in
+`README.md` giving a step-by-step manual browser walkthrough (create a user, verify the reload
+survives, sign out, wrong-password case) alongside the automated equivalent — the user explicitly
+asked that these manual steps live in `README.md`, not just in a chat response.
+
+Verified: all three Playwright tests pass against the live Docker stack; the test org was confirmed
+deleted from the dev database afterward; `npm run test`/`lint`/`build` re-verified clean with
+Playwright's config/spec files present (Vitest correctly excludes `e2e/**`, Next's own `tsc` step
+correctly type-checks them since they're plain `.ts` files under the project).
+
 ## Next action
 
 Stage 9 (part 2) — the dashboard content and the manual "trigger analysis" form (replacing true
