@@ -66,6 +66,13 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile
+      # NEXT_PUBLIC_* variables are inlined into the client bundle at
+      # `npm run build` time, not read at container start — passing this only
+      # via `environment:` below silently ships an empty/default value baked
+      # into the JS. It must also be a build arg so it reaches the builder
+      # stage that actually runs the build (see apps/web/Dockerfile).
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}

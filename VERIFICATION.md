@@ -643,3 +643,64 @@ covers (`POST /repos/index` against a real git repo inside the worker container,
 `has_ready_index: true`, *then* `POST /analysis` with `agent="cross_file"` and the matching
 `repo_path`) — worth doing once as a real end-to-end check, but only with explicit permission for
 the model call, same as every other real LLM verification in this project.
+
+## Stage 9 (part 1) — frontend auth shell
+
+```bash
+cd apps/web
+npm install
+npm run lint
+npm run test    # → 19 passed
+npm run build   # production build (also what `docker compose build web` runs)
+```
+
+### Live, against the running containers
+
+```bash
+docker compose build api worker web
+docker compose up -d api worker web
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3000/login   # → 200
+```
+
+Confirm `NEXT_PUBLIC_API_BASE_URL` actually got inlined into the production bundle at build time
+(not just configured and silently ignored — see IMPLEMENTATION_PLAN.md's "Stage 9 (part 1)" section
+for the real Dockerfile bug this catches):
+
+```bash
+docker exec ai-code-reviewer-web-1 sh -c "grep -rl 'localhost:8000' /app/.next/static | head -1"
+# → a chunk path, proving the URL is baked into the client bundle
+```
+
+Exercise the real auth contract with `Origin: http://localhost:3000` (the browser's actual origin,
+not just `localhost` with no origin — CORS behaves differently) against the real API, using `sed`
+instead of `python3` for JSON extraction (see Stage 5's Windows-`python3` caveat above):
+
+```bash
+rm -f /tmp/web-cookies.txt
+SIGNUP=$(curl -s -c /tmp/web-cookies.txt -X POST http://localhost:8000/auth/signup \
+  -H "Origin: http://localhost:3000" -H "Content-Type: application/json" \
+  -d '{"org_name":"Verify Web","email":"verify-web@example.com","password":"correct-horse-battery"}')
+echo "$SIGNUP" | sed -n 's/.*"access_token":"\([^"]\{1,20\}\).*/token starts: \1.../p'
+
+curl -s -b /tmp/web-cookies.txt -X POST http://localhost:8000/auth/refresh \
+  -H "Origin: http://localhost:3000" -o /dev/null -w "refresh: %{http_code}\n"   # → 200
+
+curl -s -b /tmp/web-cookies.txt -X POST http://localhost:8000/auth/logout \
+  -H "Origin: http://localhost:3000" -o /dev/null -w "logout: %{http_code}\n"    # → 204
+
+curl -s -b /tmp/web-cookies.txt -X POST http://localhost:8000/auth/refresh \
+  -H "Origin: http://localhost:3000" -o /dev/null -w "refresh after logout: %{http_code}\n"  # → 401
+
+rm -f /tmp/web-cookies.txt
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu \
+  -c "DELETE FROM organizations WHERE name = 'Verify Web';"
+```
+
+**Windows-host caveat, reported honestly:** a fresh `npm install`/`npm ci` for this app can stall for
+several minutes on some Windows hosts (confirmed here to be genuine host filesystem/network slowness,
+not a real deadlock — an established HTTPS connection with near-zero CPU progress over minutes).
+Killing and retrying mid-install can leave specific packages corrupted rather than just missing
+(this happened twice: `zod`'s locale files, then `@next/swc-win32-x64-msvc`'s native binary) —
+recoverable by removing and reinstalling just the affected package (`rm -rf node_modules/<pkg> &&
+npm install`), not a full reinstall. `docker compose build web`'s own `npm ci`, which runs inside the
+Linux container rather than on the Windows host, was not affected and completed in under a minute.
