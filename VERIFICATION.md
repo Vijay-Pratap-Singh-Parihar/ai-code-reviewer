@@ -1,4 +1,4 @@
-# Verification — Stages 0–6
+# Verification — Stages 0–7
 
 Reproducible steps for what's already been verified in this branch. Each block is
 copy-pasteable; expected output is noted inline. See [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md)
@@ -16,7 +16,7 @@ uv sync --all-packages --group dev
 ```bash
 uv run ruff check .                                                              # → All checks passed!
 uv run mypy packages/engine/src packages/db/src apps/api/src apps/worker/src    # → Success: no issues found
-uv run pytest -v                                                                 # → 145 passed
+uv run pytest -v                                                                 # → 225 passed
 ```
 
 `apps/api/tests/test_models_db.py`, `test_auth.py`, `test_analysis.py`, and
@@ -420,3 +420,109 @@ PY
 #   (api.services.branch_index.trigger_index_build), and two real 1-hop callees —
 #   each with a human-readable retrieval_reason, well under the default 8000-token budget
 ```
+
+## Stage 7 — the cross-file agent (library only, no new endpoint)
+
+Offline, mocked-LLM checks (no API key needed):
+
+```bash
+uv run pytest packages/engine/tests/agents packages/engine/tests/test_cross_file.py \
+  packages/engine/tests/test_cross_file_integration.py -v
+# → 38 passed: 30 tool tests, 7 loop-logic tests (round cap, retry-on-malformed-JSON,
+#   bad-tool-argument handling), and the hand-verified integration test against this
+#   repo's own real graph with a scripted "smart" fake LLM
+```
+
+### The real thing: diff_only vs. cross_file, against an actual model
+
+Requires a real `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env` — **this costs real money**
+(~$0.03 for the run below). Build a small demo repo with a genuine cross-file bug:
+
+On Windows, use a plain drive-rooted path instead of `/tmp` (e.g. `C:\tmp_demo_repo`, adjusting
+`mkdir`/`cat` to `cmd`/`New-Item` equivalents) — `/tmp/...` gets translated by Git Bash for shell
+commands but resolves differently for a native Windows Python process, so the two disagree on where
+the repo actually is.
+
+```bash
+mkdir -p /tmp/demo_repo && cd /tmp/demo_repo
+cat > inventory.py <<'PY'
+"""Inventory helpers."""
+
+
+class Item:
+    def __init__(self, name: str, quantity: int) -> None:
+        self.name = name
+        self.quantity = quantity
+
+
+def get_low_stock_items(items: list[Item]) -> dict[str, int]:
+    """Items with fewer than 10 units left, keyed by name for O(1) lookup."""
+    return {item.name: item.quantity for item in items if item.quantity < 10}
+PY
+cat > alerts.py <<'PY'
+"""Low-stock alerting."""
+
+from inventory import get_low_stock_items
+
+
+def notify(message: str) -> None:
+    print(message)
+
+
+def send_low_stock_alerts(items):
+    for item in get_low_stock_items(items):
+        notify(f"Low stock: {item.name} ({item.quantity} left)")
+PY
+cd -
+```
+
+```bash
+uv run python - <<'PY'
+import asyncio
+from pathlib import Path
+from revu.agents import cross_file, diff_only
+from revu.index.graph import build_index_at_path
+
+DEMO = Path("/tmp/demo_repo")
+MODEL = "claude-sonnet-5"
+TITLE = "Return a dict from get_low_stock_items for O(1) lookup"
+BODY = "Refactors get_low_stock_items to return a dict keyed by item name instead of a list."
+DIFF = """diff --git a/inventory.py b/inventory.py
+--- a/inventory.py
++++ b/inventory.py
+@@ -8,5 +8,5 @@
+
+
+-def get_low_stock_items(items: list[Item]) -> list[Item]:
+-    \"\"\"Items with fewer than 10 units left.\"\"\"
+-    return [item for item in items if item.quantity < 10]
++def get_low_stock_items(items: list[Item]) -> dict[str, int]:
++    \"\"\"Items with fewer than 10 units left, keyed by name for O(1) lookup.\"\"\"
++    return {item.name: item.quantity for item in items if item.quantity < 10}
+"""
+
+async def main():
+    idx = build_index_at_path(DEMO)
+    d = await diff_only.review_diff(pr_title=TITLE, pr_body=BODY, diff=DIFF, model=MODEL)
+    print(f"diff_only: {len(d.findings)} findings, cost=${d.cost_usd}")
+    for f in d.findings:
+        print(f"  [{f.confidence}] {f.message[:100]}")
+
+    cf = await cross_file.review_cross_file(
+        pr_title=TITLE, pr_body=BODY, diff=DIFF, repo_root=DEMO, graph=idx.graph, model=MODEL,
+    )
+    print(f"\ncross_file: {len(cf.findings)} findings, cost=${cf.cost_usd}")
+    for f in cf.findings:
+        print(f"  [{f.confidence}] {f.message[:150]}")
+        for e in f.evidence:
+            print(f"    evidence: {e.file_path}:{e.line_start}-{e.line_end}")
+
+asyncio.run(main())
+PY
+```
+
+Expected: `diff_only` returns a few speculative findings around confidence 0.7 with no cited
+evidence; `cross_file` returns one high-confidence (~0.98) finding naming the real caller
+(`alerts.send_low_stock_alerts`) and the exact runtime failure, with `evidence` pointing at both
+`inventory.py` and `alerts.py` — the files it actually inspected via `find_callers`/`read_file`.
+See `IMPLEMENTATION_PLAN.md`'s Stage 7 section for the exact output from the last real run.

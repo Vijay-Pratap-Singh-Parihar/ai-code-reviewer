@@ -203,6 +203,34 @@ No benchmark-driven recall curve exists in this track (see `IMPLEMENTATION_PLAN.
 — it's validated instead by a hand-verified case against this repository's own real indexed graph,
 in the same spirit as Stage 4's 10 hand-verified call edges.
 
+## Cross-file agent (Stage 7)
+
+`revu.agents.cross_file.review_cross_file` — a Principal-Software-Architect-persona reviewer with
+tools (`read_file`, `graph_query`, `find_definition`, `find_callers`) to inspect the real repository,
+seeded with Stage 6's context bundle rather than exploring from zero. LangGraph-orchestrated; every
+model call still goes through `revu.providers.llm.complete`. Plain importable library, not wired into
+the live `/analysis` pipeline yet (see `IMPLEMENTATION_PLAN.md` Stage 7 for why that's deliberate):
+
+```python
+from pathlib import Path
+from revu.agents.cross_file import review_cross_file
+from revu.index.graph import build_index_at_path
+
+repo_root = Path("/path/to/a/repo")
+graph = build_index_at_path(repo_root).graph
+result = await review_cross_file(
+    pr_title=title, pr_body=body, diff=diff_text,
+    repo_root=repo_root, graph=graph, model="claude-sonnet-5",
+)
+print(result.stopped_reason, [f.message for f in result.findings])
+```
+
+Validated three ways (see `IMPLEMENTATION_PLAN.md` Stage 7 for the full writeup): mocked loop-logic
+tests, a hand-verified integration test against this repo's own real graph, and — the roadmap's
+actual gate — a real, live, cost-approved comparison against `diff_only` on a genuine cross-file bug.
+`diff_only` produced 3 speculative findings (confidence 0.7, no caller identified); `cross_file`
+found the exact real caller and the exact runtime failure at confidence 0.98. Total cost: $0.031.
+
 ## Status
 
 Build order and what's covered vs. deferred from the original roadmap: see
