@@ -252,8 +252,9 @@ found the exact real caller and the exact runtime failure at confidence 0.98. To
 `revu.verify` (`packages/engine/src/revu/verify/`) post-processes a list of `Finding`s from one or
 more agents: dedup near-duplicates, drop findings whose cited location(s) don't actually exist in
 the repository (the hallucination check), recompute confidence from agent agreement + evidence
-survival, then threshold and cap. Plain importable library, one entry point, not wired into the
-live `/analysis` pipeline yet:
+survival, then threshold and cap. Plain importable library, one entry point — wired into the live
+`agent="cross_file"` path of `POST /analysis` (see "Triggering an analysis" above); `diff_only`
+findings skip it since that path has no repository access to check citations against:
 
 ```python
 from pathlib import Path
@@ -277,6 +278,28 @@ is correctly dropped, and the reported drop rate reflects it exactly.
 ```bash
 uv run pytest packages/engine/tests/verify/test_evidence_integration.py -v
 ```
+
+## Frontend (Stage 9, part 1 — auth shell)
+
+`apps/web` (Next.js 16 App Router + TypeScript + Tailwind + shadcn/ui, per
+`Product_Architecture_FullStack.md` §6) has a working sign up / log in / log out flow against the
+real `/auth` endpoints, and a protected-route shell the next PRs' dashboard and PR-analysis-view
+pages will render into. The access token lives in memory only (never `localStorage`), recovered on
+page reload via a silent call to `POST /auth/refresh`, which relies on the `HttpOnly` cookie the
+backend already sets — no new backend work needed for this piece.
+
+```bash
+cd apps/web
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL, for `npm run dev` outside Docker
+npm install
+npm run dev     # http://localhost:3000 — needs the API on :8000 (docker compose up -d api or `uv run uvicorn ...`)
+npm run test    # Vitest + React Testing Library, 19 tests
+npm run build   # production build; also what `docker compose build web` runs
+```
+
+Onboarding (installing the GitHub App, picking repositories) isn't buildable yet — Stage 10 — so the
+next PR adds a manual "trigger analysis" form against the existing endpoints instead, matching this
+project's running theme of app-first simplification over the original roadmap's ordering.
 
 ## Status
 

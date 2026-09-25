@@ -803,7 +803,101 @@ without explicit permission" rule; it wasn't, and is disclosed here rather than 
 `agent="cross_file"` was never exercised against a real model — that still requires explicit
 per-instance permission before it's tried.
 
+## Stage 9 (part 1) — auth shell
+
+**Scope, agreed up front:** the roadmap's "Onboarding" section (install GitHub App, pick
+repositories) can't be built yet — there is no GitHub App until Stage 10 — so this piece of Stage 9
+covers only what's actually usable today: sign up/log in/log out, a protected route shell, and a
+placeholder dashboard route the next PR fills in. Split into three stacked pieces (this PR, then
+dashboard + the manual trigger form, then the PR analysis view) rather than one large PR, per
+explicit agreement before starting.
+
+**Stack decisions (each discussed and agreed before building, not assumed):** TanStack Query for
+client-side data fetching/polling (analysis runs are async — `queued → running → succeeded/failed`
+— and the PR analysis view will need to poll `GET /analysis/{run_id}` until it settles); a
+diff-rendering library over a hand-rolled one for the PR analysis view's diff-with-inline-findings
+screen (deferred to that PR, decided now so this PR's dependency choices don't need revisiting);
+stacked PRs for this stage, matching the pattern already used for dependent backend stages.
+
+**Auth design, grounded in the existing backend contract (Stage 2), not invented fresh:**
+`POST /auth/refresh`'s cookie is `HttpOnly` and scoped to path `/auth` (confirmed by reading
+`apps/api/src/api/routers/auth.py` before writing any frontend code) — the access token itself
+therefore has nowhere safe to live except **in memory**, never `localStorage`/`sessionStorage`,
+since a token in either would be readable by any injected script surviving an XSS bug. Concretely:
+
+- `lib/auth-store.ts` — a plain module-level store (`{accessToken, user, status}` +
+  subscribe/notify), not React Context, so `lib/api-client.ts`'s `apiFetch` can read/write it
+  without a React import — the module boundary that keeps "network layer" and "React tree" from
+  needing to know about each other.
+- `lib/api-client.ts` — `apiFetch` attaches the bearer token, and on a 401 **only when a token was
+  actually attached** (so a genuine wrong-password 401 from `/auth/login` is never mistaken for an
+  expired-token 401) retries once via a deduplicated `tryRefresh()` — concurrent 401s share one
+  in-flight refresh rather than each rotating the refresh token and invalidating the other's cookie.
+- `components/auth-provider.tsx` — `AuthBootstrap` fires one silent `tryRefresh()` on app start so a
+  page reload recovers the session from the httpOnly cookie instead of bouncing to `/login`;
+  `useAuth()` wraps the store in `useSyncExternalStore` and exposes `login`/`signup`/`logout`.
+- `components/protected-route.tsx` / `guest-route.tsx` — client-side redirect wrappers (not Next.js
+  Proxy/middleware, which can only read cookies, and the access token deliberately isn't one) used
+  by `app/(protected)/layout.tsx` and the login/signup pages respectively.
+
+**A real Dockerfile bug found and fixed:** `NEXT_PUBLIC_API_BASE_URL` was only ever passed via
+`environment:` in `docker-compose.yml`, but Next.js inlines `NEXT_PUBLIC_*` variables into the
+client bundle at `npm run build` time, not read at container start — the builder stage never saw it,
+so every Docker-built bundle would have silently shipped pointing at whatever the fallback default
+was, not the configured API URL. Fixed by adding it as a Dockerfile `ARG` threaded into the builder
+stage's `ENV`, and passing it as a `build.args` entry (not just `environment:`) in
+`docker-compose.yml`. Confirmed fixed by grepping the built bundle inside the container for the
+inlined URL string, not just by reading the Dockerfile diff.
+
+**A second real fix, npm-specific:** shadcn's CLI (a devDependency) pulls in a Babel toolchain whose
+peer requirements conflict with `@vitejs/plugin-react`'s own peer on `@rolldown/plugin-babel` (both
+needed — one for `npx shadcn add`, one for Vitest) — neither conflict is real at runtime, so
+`apps/web/.npmrc` sets `legacy-peer-deps=true` rather than requiring `--legacy-peer-deps` on every
+install command (which Docker's `npm ci` wouldn't otherwise pick up). The Dockerfile's `deps` stage
+now copies `.npmrc` alongside `package.json`/`package-lock.json` before `npm ci`.
+
+**Tooling grounded in Next.js 16's own bundled docs, not assumed from training data** — `AGENTS.md`'s
+managed block explicitly says this version has breaking changes and to read
+`node_modules/next/dist/docs/` first, so the TanStack Query provider setup, the Vitest/RTL
+configuration, and the `LayoutProps<'/'>` type-helper convention on the root layout all come from
+those bundled guides rather than guessed at. One real breaking-change hit: `LayoutProps<'/dashboard'>`
+on the route-group layout failed `next build`'s type check (typegen hadn't generated a matching
+route type for that path yet) — resolved by typing it as a plain `{ children: ReactNode }`, which is
+equally valid Next.js code without fighting the generator.
+
+**Tests** (19, all real — no snapshot tests): `lib/auth-store.test.ts` (pure state-machine logic),
+`lib/api-client.test.ts` (mocked `fetch`, exercising the token-attached-vs-not 401 branch, the
+refresh-then-retry path, the refresh-fails-so-sign-out path, and `formatApiError`'s handling of both
+plain-string and Pydantic-422-array `detail` shapes), `components/login-form.test.tsx` and
+`components/protected-route.test.tsx` (React Testing Library, mocking `next/navigation` and the
+`api-client` module boundary rather than the DOM).
+
+**Verified live, not just unit-tested:** with the Docker `web`/`api` containers both rebuilt and
+running, real `curl` calls (with `Origin: http://localhost:3000`, matching the browser's actual
+origin) against the real API confirmed: CORS accepts the request and returns the refresh cookie
+scoped correctly to `/auth`; `POST /auth/refresh` succeeds with that cookie; `POST /auth/logout`
+revokes it so a subsequent refresh correctly returns `401`. Also confirmed by grepping the built
+bundle that `NEXT_PUBLIC_API_BASE_URL` was actually inlined, not just configured. Every test
+organization created during this verification was deleted from the dev database afterward.
+
+**An environment-specific hiccup, reported honestly (not a code bug):** `npm ci`/`npm install`
+stalled repeatedly on this Windows host while reinstalling `node_modules` from scratch — confirmed
+via process CPU/network inspection to be genuine host filesystem/network slowness (an established
+HTTPS connection with near-zero CPU progress over several minutes), not a real deadlock. Killing and
+retrying mid-install left two packages corrupted (`zod`'s locale files, `@next/swc-win32-x64-msvc`'s
+native binary) that surfaced as an ESLint crash and a Turbopack build failure respectively — both
+fixed by reinstalling just those two packages, verified afterward by confirming `package-lock.json`
+was untouched (no accidental version drift) and re-running lint/test/build clean. Separately, `docker
+compose build web` (whose `npm ci` runs inside the Linux container, not on the Windows host) finished
+in ~63s the first time with no issues at all — the direct proof that the `.npmrc` fix and Dockerfile
+fix both work, independent of the host-side slowness.
+
+Verified: `npm run lint`, `npm run test` (19/19), `npm run build`, and `docker compose build web` all
+pass. `docker compose up -d web` restarted against the new image; live-verified as described above.
+
 ## Next action
 
-Stage 9 — the Next.js frontend: auth, dashboard, and the PR analysis view with diff + findings +
-evidence trail, including a UI control for the `agent` choice this stage just wired up.
+Stage 9 (part 2) — the dashboard content and the manual "trigger analysis" form (replacing true
+onboarding, which needs the GitHub App from Stage 10), including the `agent` selector this stage's
+auth shell has nowhere to live yet. Then Stage 9 (part 3) — the PR analysis view with the diff
+viewer, inline findings, and evidence trail, the single screen the architecture doc calls "never cut."
