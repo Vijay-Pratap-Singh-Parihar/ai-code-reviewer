@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from api.core.config import get_settings
 from api.schemas.analysis import AnalysisRequest
+from api.services.branch_index import BranchIndexNotReadyError, get_current_branch_index
 from api.services.repositories import RepositoryOwnedByAnotherOrgError, get_or_create_repository
 
 settings = get_settings()
@@ -19,7 +20,14 @@ settings = get_settings()
 # so `api.services.branch_index` could share them without importing this
 # module's analysis-specific pull-request logic. Existing callers/tests that
 # import `RepositoryOwnedByAnotherOrgError` from here still work unchanged.
-__all__ = ["RepositoryOwnedByAnotherOrgError", "create_analysis_run", "get_run_for_org"]
+# `BranchIndexNotReadyError` is re-exported the same way for `agent="cross_file"`
+# requests (Stage 8's pipeline-wiring follow-up).
+__all__ = [
+    "BranchIndexNotReadyError",
+    "RepositoryOwnedByAnotherOrgError",
+    "create_analysis_run",
+    "get_run_for_org",
+]
 
 _get_or_create_repository = get_or_create_repository
 
@@ -63,9 +71,22 @@ async def create_analysis_run(
     )
     pr = await _get_or_create_pull_request(session, repo=repo, user=user, body=body)
 
+    branch_index_id: uuid.UUID | None = None
+    if body.agent == "cross_file":
+        view = await get_current_branch_index(
+            session, repo_id=repo.id, branch_name=body.base_branch
+        )
+        if view.ready is None:
+            raise BranchIndexNotReadyError(
+                f"no ready branch index for '{body.repo_full_name}' @ '{body.base_branch}'; "
+                "POST /repos/index for this branch and wait for it to reach 'ready' first"
+            )
+        branch_index_id = view.ready.id
+
     run = AnalysisRun(
         pr_id=pr.id,
-        config_snapshot={"agent": "diff_only", "model": settings.revu_model_review},
+        branch_index_id=branch_index_id,
+        config_snapshot={"agent": body.agent, "model": settings.revu_model_review},
         status=AnalysisRunStatus.QUEUED,
     )
     session.add(run)

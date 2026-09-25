@@ -21,6 +21,15 @@ from api.schemas.branch_index import IndexTriggerRequest
 from api.services.repositories import get_or_create_repository, get_repository_for_org
 
 
+class BranchIndexNotReadyError(Exception):
+    """Raised when a `cross_file` analysis is requested for a (repo,
+    base_branch) pair with no `ready` `BranchIndex` row yet — there is no
+    graph to seed the agent's tools with. The caller must `POST /repos/index`
+    for this branch first and wait for it to reach `ready` (or poll
+    `GET /repos/{repo_id}/branches/{branch_name}/index`) before retrying.
+    """
+
+
 @dataclass
 class CurrentIndexView:
     """The result of "what index should I use for (repo, branch) right now?"

@@ -149,6 +149,22 @@ curl -s http://localhost:8000/analysis/$RUN_ID -H "Authorization: Bearer $TOKEN"
 repo, connectable to only one org's installation) — a second org posting the same
 `repo_full_name` gets `409 Conflict`, not a silently misattributed run.
 
+`agent` picks the reviewer: `"diff_only"` (default, no repository access needed, ~4x cheaper) or
+`"cross_file"` (Stage 7's tool-calling agent, verified through Stage 8's evidence checker before
+persisting — see IMPLEMENTATION_PLAN.md's "Pipeline wiring" section). `cross_file` requires a
+`repo_path` (a path on the **worker container's** filesystem, same convention as Stage 5's branch
+memory below) and an already-`ready` branch index for `(repo_full_name, base_branch)` built via
+`POST /repos/index` — there's no on-demand indexing fallback, so a missing index is a `409`, not a
+slow first request:
+
+```bash
+curl -s -X POST http://localhost:8000/analysis \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
+  -d '{"repo_full_name":"acme/widgets","head_sha":"abc1234","pr_number":1,
+       "pr_title":"Fix off-by-one","diff":"--- a/app.py\n+++ b/app.py\n...",
+       "agent":"cross_file","repo_path":"/tmp/acme-widgets"}'
+```
+
 ## Branch memory (Stage 5)
 
 `BranchIndex`/`IndexUpdateLog` now have a real row lifecycle, wired end to end: trigger a build via
