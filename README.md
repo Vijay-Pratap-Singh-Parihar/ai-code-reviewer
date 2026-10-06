@@ -279,21 +279,23 @@ is correctly dropped, and the reported drop rate reflects it exactly.
 uv run pytest packages/engine/tests/verify/test_evidence_integration.py -v
 ```
 
-## Frontend (Stage 9, parts 1–2 — auth shell + dashboard)
+## Frontend (Stage 9 — complete)
 
 `apps/web` (Next.js 16 App Router + TypeScript + Tailwind + shadcn/ui, per
 `Product_Architecture_FullStack.md` §6) has a working sign up / log in / log out flow against the
-real `/auth` endpoints, plus a dashboard that triggers real analysis runs against `POST /analysis`
-and `POST /repos/index` and polls them to completion. The access token lives in memory only (never
-`localStorage`), recovered on page reload via a silent call to `POST /auth/refresh`, which relies on
-the `HttpOnly` cookie the backend already sets — no new backend work needed for the auth piece.
+real `/auth` endpoints, a dashboard that triggers real analysis runs against `POST /analysis` and
+`POST /repos/index`, and the PR analysis view the architecture doc calls "never cut" — a diff with
+findings anchored inline at the lines they cite, plus each finding's full evidence trail. The access
+token lives in memory only (never `localStorage`), recovered on page reload via a silent call to
+`POST /auth/refresh`, which relies on the `HttpOnly` cookie the backend already sets — no new backend
+work needed for the auth piece.
 
 ```bash
 cd apps/web
 cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL, for `npm run dev` outside Docker
 npm install
 npm run dev     # http://localhost:3000 — needs the API on :8000 (docker compose up -d api or `uv run uvicorn ...`)
-npm run test    # Vitest + React Testing Library, 28 tests
+npm run test    # Vitest + React Testing Library, 49 tests
 npm run test:e2e # Playwright, real browser — see "Manual and automated UI testing" below
 npm run build   # production build; also what `docker compose build web` runs
 ```
@@ -301,7 +303,10 @@ npm run build   # production build; also what `docker compose build web` runs
 The dashboard's "Trigger a review" form picks `agent: diff_only | cross_file` per the same
 cost/depth choice `POST /analysis` exposes — **submitting it against a real backend makes a real,
 billed LLM call**, the same as `curl`-ing the endpoint directly, so don't trigger it against a
-real API key without meaning to.
+real API key without meaning to. Click into any triggered run to see the PR analysis view
+(`/runs/[runId]`) — note that the diff itself only renders for runs triggered in the current browser
+tab's session (it isn't persisted server-side; see `IMPLEMENTATION_PLAN.md`'s Stage 9 part 3 section),
+findings and their evidence trail always work since those come from the real API response.
 
 Onboarding (installing the GitHub App, picking repositories) isn't buildable yet — Stage 10 — so the
 dashboard's manual trigger form stands in for it, matching this project's running theme of

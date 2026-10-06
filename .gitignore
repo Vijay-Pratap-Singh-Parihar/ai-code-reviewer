@@ -12,6 +12,9 @@ htmlcov/
 dist/
 build/
 
+# revu.index's default local graph-blob cache (REVU_INDEX_STORAGE_DIR)
+.revu/
+
 # uv
 uv.lock.bak
 
@@ -26,8 +29,9 @@ apps/web/.next/
 apps/web/out/
 apps/web/.env*.local
 
-# Runtime data
-runs/
+# Runtime data (root-level only — a bare "runs/" also matched
+# apps/web/src/app/(protected)/runs/, silently hiding that route from git)
+/runs/
 *.sqlite3
 *.db
 

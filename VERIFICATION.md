@@ -724,3 +724,38 @@ Killing and retrying mid-install can leave specific packages corrupted rather th
 recoverable by removing and reinstalling just the affected package (`rm -rf node_modules/<pkg> &&
 npm install`), not a full reinstall. `docker compose build web`'s own `npm ci`, which runs inside the
 Linux container rather than on the Windows host, was not affected and completed in under a minute.
+
+## Stage 9 (part 3) — PR analysis view: diff + inline findings + evidence trail
+
+```bash
+cd apps/web
+npm run lint
+npm run test    # → 49 passed
+npm run build   # production build
+```
+
+### Real-browser, real-LLM end to end (costs real money — confirm before running)
+
+```bash
+docker compose up --build
+```
+
+1. Sign up, land on the dashboard.
+2. In "2. Trigger a review", leave the defaults (`agent=diff_only`, the pre-filled off-by-one diff)
+   and click **Trigger review**.
+3. Wait for the run card to show **succeeded**, then click it.
+4. On `/runs/{id}` you should see: the diff rendered with real line numbers, the finding's severity
+   badge and message appearing **inline, directly under the line it cites** (not just listed below),
+   and the same finding repeated in the "Findings & evidence trail" section with its full evidence
+   list (empty for `diff_only`, since it never leaves the diff text to look anywhere else).
+5. Clean up: `docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM
+   organizations WHERE name = '<the org you signed up with>';"`
+
+**What this proves that the component tests can't:** `react-diff-view`'s underlying parser
+(`gitdiff-parser`) only derives a file's path from a `diff --git a/X b/Y` header line — it silently
+returns an empty path without one, which this project's own example diff (and plausibly any
+hand-typed or copy-pasted diff missing that header) doesn't include. This was caught by running
+exactly the steps above, not by reading the library's source, and is fixed in
+`lib/diff-utils.ts`'s `ensureGitDiffHeaders` — a regression test for the exact diff shape lives in
+`lib/diff-utils.test.ts` and `components/diff-viewer.test.tsx`, but verifying the real rendering
+path live once, as above, is what actually caught it.

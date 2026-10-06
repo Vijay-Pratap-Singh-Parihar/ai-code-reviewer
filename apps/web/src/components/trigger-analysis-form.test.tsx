@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TriggerAnalysisForm } from "@/components/trigger-analysis-form";
 import { triggerAnalysis } from "@/lib/api-client";
+import { saveRunMetadata } from "@/lib/run-metadata-store";
+
+vi.mock("@/lib/run-metadata-store", () => ({ saveRunMetadata: vi.fn() }));
 
 async function selectCrossFile() {
   const user = userEvent.setup();
@@ -28,6 +31,35 @@ function renderForm(onTriggered: (runId: string) => void) {
 describe("TriggerAnalysisForm", () => {
   beforeEach(() => {
     vi.mocked(triggerAnalysis).mockReset();
+    vi.mocked(saveRunMetadata).mockReset();
+  });
+
+  it("stashes the diff/PR metadata for the PR analysis view on success", async () => {
+    vi.mocked(triggerAnalysis).mockResolvedValue({
+      id: "run-meta",
+      status: "queued",
+      tokens_in: 0,
+      tokens_out: 0,
+      cost_usd: 0,
+      latency_ms: null,
+      error: null,
+      findings: [],
+    });
+    renderForm(vi.fn());
+
+    fireEvent.click(screen.getByRole("button", { name: /trigger review/i }));
+
+    await waitFor(() => expect(saveRunMetadata).toHaveBeenCalledTimes(1));
+    const [runId, metadata] = vi.mocked(saveRunMetadata).mock.calls[0];
+    expect(runId).toBe("run-meta");
+    expect(metadata).toMatchObject({
+      repoFullName: "acme/widgets",
+      baseBranch: "main",
+      prNumber: 1,
+      prTitle: "Fix off-by-one",
+      agent: "diff_only",
+    });
+    expect(metadata.diff).toContain("for i in range(n + 1)");
   });
 
   it("submits with agent='diff_only' and no repo_path by default", async () => {

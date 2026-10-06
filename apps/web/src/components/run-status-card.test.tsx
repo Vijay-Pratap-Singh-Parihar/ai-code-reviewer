@@ -9,6 +9,10 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
   return { ...actual, getAnalysisRun: vi.fn() };
 });
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+}));
+
 function renderCard(runId: string) {
   const queryClient = new QueryClient();
   return render(
@@ -23,7 +27,7 @@ describe("RunStatusCard", () => {
     vi.mocked(getAnalysisRun).mockReset();
   });
 
-  it("shows a succeeded run's findings, tokens, and cost", async () => {
+  it("shows a succeeded run's status, tokens, cost, and finding count", async () => {
     vi.mocked(getAnalysisRun).mockResolvedValue({
       id: "run-1",
       status: "succeeded",
@@ -42,6 +46,7 @@ describe("RunStatusCard", () => {
           message: "off-by-one in the loop bound",
           confidence: 0.9,
           agent_name: "diff_only",
+          evidence: [],
         },
       ],
     });
@@ -49,10 +54,14 @@ describe("RunStatusCard", () => {
     renderCard("run-1");
 
     expect(await screen.findByText("succeeded")).toBeInTheDocument();
-    expect(await screen.findByText(/off-by-one in the loop bound/)).toBeInTheDocument();
     expect(screen.getByText(/356 in \/ 9 out tokens/)).toBeInTheDocument();
     expect(screen.getByText("$0.0008")).toBeInTheDocument();
-    expect(screen.getByText(/app\.py:3-3/)).toBeInTheDocument();
+    expect(screen.getByText("1 finding")).toBeInTheDocument();
+
+    // Full findings/evidence rendering now lives on the dedicated run page,
+    // not here — the card links to it instead of duplicating the content.
+    expect(screen.queryByText(/off-by-one in the loop bound/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link")).toHaveAttribute("href", "/runs/run-1");
   });
 
   it("shows a failed run's error message", async () => {
@@ -73,7 +82,7 @@ describe("RunStatusCard", () => {
     expect(await screen.findByText("provider unavailable")).toBeInTheDocument();
   });
 
-  it("shows 'no findings' for a succeeded run with none", async () => {
+  it("shows '0 findings' for a succeeded run with none", async () => {
     vi.mocked(getAnalysisRun).mockResolvedValue({
       id: "run-3",
       status: "succeeded",
@@ -87,6 +96,6 @@ describe("RunStatusCard", () => {
 
     renderCard("run-3");
 
-    expect(await screen.findByText("No findings.")).toBeInTheDocument();
+    expect(await screen.findByText("0 findings")).toBeInTheDocument();
   });
 });
