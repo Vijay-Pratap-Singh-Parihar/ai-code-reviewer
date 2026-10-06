@@ -1080,7 +1080,81 @@ Verified: `ruff check .`, `mypy --strict` (77 source files), `pytest` (**274/274
 `npm run lint`, `npm run test` (**49/49**, 9 new), `npm run build` all pass; `docker compose build`
 clean for all three images; live-verified as described above.
 
+## Stage 9 (follow-up) — dashboard shell redesign: navbar, collapsible sidebar, dark mode, analytics
+
+A UI pass on top of the already-complete Stage 9, requested after seeing the shipped app look "too
+basic" for a demo. **Design-reviewed before any real code was touched**: a one-artboard interactive
+mockup (Claude's Design-canvas artifact type) showing the proposed sidebar/navbar/analytics layout —
+with the sidebar collapse and the dark/light toggle both actually clickable in the mockup — was shown
+and approved before building anything in the real app, per explicit request ("give me artifact of
+design when I will confirm then only build the UIUX").
+
+Built:
+
+- **Dark/light mode** — `next-themes` (`components/theme-provider.tsx`, `attribute="class"`, matching
+  `globals.css`'s existing `@custom-variant dark (&:is(.dark *))` — the dark-mode CSS tokens already
+  existed from Stage 9 part 1's shadcn scaffold, they just had no toggle). `components/theme-toggle.tsx`
+  renders both the sun and moon icon always and lets CSS `dark:` variants (driven by the class
+  `next-themes` sets before hydration) pick which is visible, rather than any client-only "which theme
+  is active" state of our own — avoids a hydration-mismatch risk entirely rather than working around
+  one. `suppressHydrationWarning` added to `<html>` per `next-themes`' own required setup (the class it
+  sets before hydration is expected to differ from the server-rendered markup).
+- **Collapsible sidebar + navbar** — shadcn's `sidebar` component (`npx shadcn add sidebar`, pulled in
+  `separator`/`sheet`/`skeleton`/`tooltip` and a `use-mobile` hook as its own dependencies). `AppShell`
+  rebuilt around `SidebarProvider`/`SidebarInset`, with `AppSidebar`
+  (`components/app-sidebar.tsx`) as the actual nav content: **Dashboard** is the one real, wired-up
+  item; **Repositories / Branch Memory / AI Providers / Usage & Budget / History** — every other P1/P2
+  section `Product_Architecture_FullStack.md` §6 plans — render disabled with a "Soon" badge rather
+  than being omitted. Chosen deliberately over hiding them entirely: it visualizes the real planned
+  product for a demo audience without risking a dead link, since shadcn's own disabled-button styling
+  (`aria-disabled`/`pointer-events-none`) makes "not yet clickable" visually unambiguous. Collapse
+  state persists across reloads via the sidebar component's own cookie, and `Ctrl/Cmd+B` toggles it —
+  both are the shadcn component's existing behavior, not something built new here.
+- **Session analytics widgets** — `components/analytics-widgets.tsx`, a 6-tile stat row (Runs,
+  Succeeded, Failed, In progress, Findings, Cost) above the dashboard's trigger forms. Reads the exact
+  same `["analysis-run", runId]` queries each `RunStatusCard` already polls via `useQueries` — adds
+  zero network requests, since TanStack Query shares the cache by key — and is explicitly labeled
+  "Session analytics," not implied to be persistent history, for the same reason Stage 9 part 2's run
+  list is session-only: there's still no "list my runs" backend endpoint.
+
+**A real bug found in shadcn's own generated code, not ours:** `hooks/use-mobile.ts` (a dependency the
+sidebar component pulls in) read `window.matchMedia` inside a `useEffect` and called `setState`
+directly in its body — the same "setState synchronously within an effect" anti-pattern already fixed
+once in this project (`lib/run-metadata-store.ts`'s `useRunMetadata`, Stage 9 part 3). Rewrote it with
+`useSyncExternalStore` the same way, which also gives it a well-defined, SSR-safe `false` server
+snapshot it didn't have before.
+
+**Tests** (16 new, 56/56 frontend total): `theme-toggle.test.tsx` (toggles to the opposite of whatever
+`resolvedTheme` currently is), `app-sidebar.test.tsx` (Dashboard renders as a real link and is marked
+active on both `/dashboard` and `/runs/*`; every planned item is present, non-interactive, and badged
+"Soon"), `analytics-widgets.test.tsx` (zero-state with no runs yet; correct aggregation across a mix
+of succeeded/failed/running runs — reading from the real `getAnalysisRun` query shape, not hand-waved).
+Needed a `window.matchMedia` polyfill added to `vitest.setup.ts` (jsdom doesn't implement it) for any
+test that renders the sidebar.
+
+**Verified live** against the real Docker stack (free — no LLM involved): signed up, confirmed the
+sidebar's planned items render disabled with "Soon" badges, confirmed the analytics row renders,
+clicked the theme toggle and read `<html>`'s class list directly (`light` → `dark`, confirmed, not
+assumed), and clicked the sidebar trigger and measured the sidebar's actual rendered width before/after
+(256px → 48px, confirmed collapse). The free Stage 9 part 1 auth suite (3/3) was re-run against the
+new shell unchanged, confirming no regression. Test org cleaned up from the dev database afterward.
+
+Verified: `ruff`/`mypy`/`pytest` unaffected (no backend changes this round); `npm run lint`,
+`npm run test` (**56/56**, 16 new), `npm run build`, and `docker compose build web` all pass.
+
 ## Next action
 
 Stage 10 — the real GitHub App: registration, webhook receiver with signature verification, and the
 installation flow, replacing the manual "paste the diff" trigger that's stood in since Stage 3.
+
+**UI reference gathered for Stage 10/11 (not scope for now):** the user shared a reference design
+(a "CodeSense" mockup) with concrete shapes worth reusing when those stages actually get built —
+noted here so it isn't lost: (1) a **GitHub Accounts** screen listing multiple connected
+orgs/installations, each with repo count, last-sync time, and a per-org "Manage" link — a natural fit
+once Stage 10's App installation flow exists and an org can have more than one installation; (2) an
+**AI Providers** screen with one card per provider (connect/not-connected state, model picker, API
+key field) plus a default-provider-and-fallback strategy picker above the cards — the schema already
+supports this (`ai_providers`/`model_routes` since Stage 1), just needs the screen (Stage 11); (3) a
+richer evolution of `/runs/[runId]` (our existing PR analysis view) with a file-tree sidebar for
+multi-file diffs and a running "N critical / M warnings" summary tile — worth revisiting once Stage 10
+makes multi-file real PRs the common case rather than the hand-pasted single-file diffs of today.

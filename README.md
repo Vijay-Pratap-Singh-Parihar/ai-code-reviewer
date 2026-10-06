@@ -290,12 +290,18 @@ token lives in memory only (never `localStorage`), recovered on page reload via 
 `POST /auth/refresh`, which relies on the `HttpOnly` cookie the backend already sets — no new backend
 work needed for the auth piece.
 
+The app shell is a collapsible sidebar (`Ctrl`/`Cmd`+`B` to toggle, state persists across reloads) —
+**Dashboard** is the only wired-up section; every other planned section from the architecture doc's
+§6 (Repositories, Branch Memory, AI Providers, Usage & Budget, History) shows disabled with a "Soon"
+badge rather than being hidden, so the full planned IA is visible without any dead links. A dark/light
+toggle in the top bar (`next-themes`) applies everywhere.
+
 ```bash
 cd apps/web
 cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL, for `npm run dev` outside Docker
 npm install
 npm run dev     # http://localhost:3000 — needs the API on :8000 (docker compose up -d api or `uv run uvicorn ...`)
-npm run test    # Vitest + React Testing Library, 49 tests
+npm run test    # Vitest + React Testing Library, 56 tests
 npm run test:e2e # Playwright, real browser — see "Manual and automated UI testing" below
 npm run build   # production build; also what `docker compose build web` runs
 ```
