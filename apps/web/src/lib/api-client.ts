@@ -141,6 +141,13 @@ export async function logout(): Promise<void> {
 
 export type Agent = "diff_only" | "cross_file";
 
+export type EvidenceItem = {
+  file_path: string;
+  line_start: number;
+  line_end: number;
+  reason: string;
+};
+
 export type FindingPublic = {
   file_path: string;
   line_start: number;
@@ -150,6 +157,7 @@ export type FindingPublic = {
   message: string;
   confidence: number;
   agent_name: string;
+  evidence: EvidenceItem[];
 };
 
 export type AnalysisRunStatus = "queued" | "running" | "succeeded" | "failed";

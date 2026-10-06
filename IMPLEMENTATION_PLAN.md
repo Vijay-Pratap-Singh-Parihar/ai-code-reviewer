@@ -24,7 +24,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 6 | Change-impact / context retrieval: diff→hunk mapping, bounded k-hop traversal, token-budgeted knapsack, `retrieval_reason` per context item | Roadmap Phase 4 | ✅ done |
 | 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | ✅ done |
 | 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | ✅ done |
-| 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | Not started |
+| 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | ✅ done |
 | 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 | App Week 15 | Not started |
 | 11 | Remaining screens: providers, usage/budget, branch memory UI, comment-posting back to GitHub | App Week 18 | Not started |
 | 12 | Token/cost controls: triage-before-inference, pre-flight estimate gate, content-addressed result cache, tiered model routing, quota ledger | Architecture §3 | Stretch, after 0–11 |
@@ -993,10 +993,94 @@ the Docker image rebuild and live-container check are pending disk space being f
 Verified: `npm run lint` clean, `npm run test` (**28/28**, 9 new), `npm run build` clean. Docker
 rebuild/live verification pending (see above).
 
+**Follow-up, once disk space was freed:** rebuilt and restarted the full stack, re-ran the free
+Playwright auth suite against it (3/3), and verified the real branch-indexing pipeline specifically
+through the Docker worker container's own filesystem (a real throwaway git repo created inside
+`ai-code-reviewer-worker-1`, indexed via the dashboard's "build branch index" form in 0.56s). All
+scratch test data and throwaway files cleaned up afterward.
+
+## Stage 9 (part 3) — PR analysis view: diff + inline findings + evidence trail
+
+The architecture doc's own "never cut, this is the demo" screen. `/runs/[runId]` (under
+`app/(protected)/`, linked from each dashboard `RunStatusCard`) renders the diff a review was
+triggered against with findings anchored inline at the lines they cite, plus a full evidence trail
+per finding — the direct visualization of what makes `cross_file` different from a plain LLM wrapper.
+
+**A real backend gap closed:** `FindingPublic` (the `/analysis` response schema) never exposed
+`evidence` at all — `revu.models.EvidenceItem`'s own docstring literally says "this is what renders
+as the evidence trail in the PR analysis view," but the API schema stopped at `message`/`confidence`.
+The engine already computes and persists it (`FindingRecord.evidence_json`, JSONB); it just never
+reached the API response. Fixed by adding `evidence: list[EvidenceItem] = Field(validation_alias=
+"evidence_json")` to `FindingPublic`, reusing `revu.models.EvidenceItem` directly rather than
+inventing a parallel API-only type (matching how `FindingPublic` already reuses `FindingCategory`/
+`Severity` from the same module). Proven to round-trip through a real Postgres row, not just that the
+Pydantic model compiles, by a new test that inserts a real `FindingRecord` with `evidence_json` set
+and asserts the exact shape comes back through `GET /analysis/{run_id}`.
+
+**The diff itself is still not persisted server-side** — `AnalysisRequest.diff` has been a transient
+job argument since Stage 3 (see its docstring), not a column on `AnalysisRun`, and that wasn't worth
+changing just for this screen. `lib/run-metadata-store.ts` stashes what the trigger form already has
+in hand (diff, PR title/body, repo, agent) into `sessionStorage` keyed by the run id `POST /analysis`
+hands back, read back on the run page via a `useSyncExternalStore`-based hook. Deliberate, documented
+limitation: the diff view is only available for runs triggered in the current browser tab's session
+(same "session-only" simplification Stage 9 part 2 already made for the dashboard's run list) —
+findings and their evidence trail are unaffected, since those come from the real API response.
+
+**Diff rendering** (`components/diff-viewer.tsx`) uses `react-diff-view` (the library chosen back
+when this stage was first scoped), anchoring each finding to the *last* line in its `line_start`–
+`line_end` range that the diff actually touches — reading as "the comment follows the flagged block,"
+GitHub's own convention for inline review comments. The evidence trail itself
+(`components/evidence-trail.tsx`) renders independently of the diff, since evidence can point at
+files that aren't part of the diff at all (exactly what `cross_file`'s tool calls are for).
+
+**A real bug found live, not by reading the library's source — and only because the live dry-run
+below was run at all:** `gitdiff-parser` (what `react-diff-view`'s `parseDiff` is built on) only ever
+reads a file's path off a `diff --git a/X b/Y` header line. It parses a file's `---`/`+++`/hunk lines
+fine without one, but `oldPath`/`newPath` both silently come back as empty strings — which broke the
+file-path match between a parsed diff file and `Finding.file_path` for *any* diff lacking that header,
+including the trigger form's own pre-filled example diff. Confirmed directly (`node -e "require(
+'react-diff-view').parseDiff(...)"`) rather than guessed at. Fixed with a small, independently tested
+preprocessing step, `lib/diff-utils.ts`'s `ensureGitDiffHeaders`, which synthesizes the missing header
+per file block from its own `---`/`+++` lines when a diff has no `diff --git` line anywhere (handles
+new-file `/dev/null` and deleted-file `/dev/null` cases too) — found and fixed *during* this stage's
+own live verification, with a regression test added for the exact diff shape that triggered it.
+
+**Also fixed while in the dependency tree anyway:** `npm install react-diff-view` surfaced `next`'s
+own `GHSA-vcvr-r3jv-pc5j` (critical RCE in `next/og ImageResponse`, an API this app never uses) with a
+non-breaking patch available — upgraded `16.3.5` → `16.3.8`. The remaining `npm audit` findings are
+all pre-existing, dev-only transitive issues (`eslint-config-next`'s/`shadcn`'s/`@tanstack/react-
+query-devtools`'s own tooling dependencies) that never ship to the browser bundle — noted honestly,
+not chased down, since remediating them is a separate task from this screen.
+
+**A real naming collision found and fixed:** the root `.gitignore`'s `runs/` entry (intended for some
+runtime-output directory, never used by this app-first track) matched *any* directory named `runs`
+anywhere in the tree with no leading slash to anchor it — silently hiding
+`apps/web/src/app/(protected)/runs/` (this stage's entire new route) from git. Caught by `git status`
+showing no trace of a file that definitely existed on disk, not by the diff looking suspicious. Fixed
+by anchoring the rule to `/runs/` (repo root only).
+
+**Tests** (9 new, 49/49 frontend total): `lib/diff-utils.test.ts` (the header-synthesis fix, including
+new-file/deleted-file `/dev/null` cases and a multi-file diff), `components/diff-viewer.test.tsx`
+(multi-file rendering, correct per-file finding anchoring, a finding outside any changed line range
+correctly not rendered, the graceful-fallback message for unparseable input, and the exact no-header
+regression case found live), `components/evidence-trail.test.tsx`, `lib/run-metadata-store.test.ts`
+(save/get round-trip, graceful degradation when storage throws, the `useRunMetadata` hook). Plus one
+new backend test (`test_get_analysis_includes_each_finding_s_evidence_trail`, real Postgres).
+`run-status-card.tsx` was simplified to a summary + link to `/runs/[runId]` rather than duplicating
+findings rendering in two places, with its tests updated to match.
+
+**Verified live, twice, against the real Docker stack** (not just component tests): the first live
+dry-run — the thing that caught the `diff --git` header bug — showed the finding correctly appearing
+in the evidence-trail section but silently missing from the inline diff widget. After the fix, a
+second live run (`agent=diff_only`, real Claude call, $0.0030) showed the finding rendered in *both*
+places: inline on the diff immediately after the cited line, and in the evidence trail section below.
+Both live runs' test organizations were deleted from the dev database afterward.
+
+Verified: `ruff check .`, `mypy --strict` (77 source files), `pytest` (**274/274**) all pass;
+`npm run lint`, `npm run test` (**49/49**, 9 new), `npm run build` all pass; `docker compose build`
+clean for all three images; live-verified as described above.
+
 ## Next action
 
-Once Docker Desktop is healthy again: rebuild and restart the `web`/`api`/`worker` images, confirm
-Postgres recovers, and live-verify the dashboard renders correctly (page load only — no real form
-submission without explicit permission first, per the LLM-cost rule above). Then Stage 9 (part 3) —
-the PR analysis view with the diff viewer, inline findings, and evidence trail, the single screen the
-architecture doc calls "never cut."
+Stage 10 — the real GitHub App: registration, webhook receiver with signature verification, and the
+installation flow, replacing the manual "paste the diff" trigger that's stood in since Stage 3.

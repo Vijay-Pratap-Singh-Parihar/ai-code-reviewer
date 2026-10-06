@@ -3,7 +3,7 @@ from typing import Literal
 
 from db.pull_request import AnalysisRunStatus
 from pydantic import BaseModel, Field, model_validator
-from revu.models import FindingCategory, Severity
+from revu.models import EvidenceItem, FindingCategory, Severity
 
 
 class AnalysisRequest(BaseModel):
@@ -47,6 +47,12 @@ class AnalysisRequest(BaseModel):
 
 
 class FindingPublic(BaseModel):
+    """`evidence` is the PR analysis view's evidence trail — which files the
+    agent looked at and why it cited them. It mirrors `FindingRecord.evidence_json`
+    (JSONB) under its real DB column name via `validation_alias`, rather than
+    renaming the column to match the API, since nothing else reads it.
+    """
+
     file_path: str
     line_start: int
     line_end: int
@@ -55,8 +61,9 @@ class FindingPublic(BaseModel):
     message: str
     confidence: float
     agent_name: str
+    evidence: list[EvidenceItem] = Field(default_factory=list, validation_alias="evidence_json")
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class AnalysisRunPublic(BaseModel):

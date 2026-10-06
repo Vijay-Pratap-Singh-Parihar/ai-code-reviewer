@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { triggerAnalysis, formatApiError, type Agent } from "@/lib/api-client";
+import { saveRunMetadata } from "@/lib/run-metadata-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,7 +31,21 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
 
   const mutation = useMutation({
     mutationFn: triggerAnalysis,
-    onSuccess: (run) => onTriggered(run.id),
+    onSuccess: (run) => {
+      // The diff isn't persisted server-side (see run-metadata-store's
+      // docstring) — stash what we already have in hand so the PR analysis
+      // view can render it for this session.
+      saveRunMetadata(run.id, {
+        repoFullName,
+        baseBranch,
+        prNumber: Number(prNumber),
+        prTitle,
+        prBody,
+        diff,
+        agent,
+      });
+      onTriggered(run.id);
+    },
   });
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {

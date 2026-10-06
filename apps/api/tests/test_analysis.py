@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 from api.db.session import get_db
 from api.main import app
 from db.branch_index import BranchIndex, BranchIndexStatus
+from db.pull_request import AnalysisRun, FindingRecord
 from httpx import AsyncClient
+from revu.models import FindingCategory, Severity
 
 
 async def _signup_and_get_token(client: AsyncClient, email: str) -> str:
@@ -239,3 +241,60 @@ async def test_trigger_analysis_cross_file_with_ready_index_enqueues_job(
     _function_name, args = enqueued[1]
     assert args[4] == "cross_file"
     assert args[5] == "/tmp/acme-widgets"
+
+
+async def test_get_analysis_includes_each_finding_s_evidence_trail(
+    api_client: AsyncClient,
+) -> None:
+    """The PR analysis view's evidence trail reads `FindingPublic.evidence`,
+    which maps onto `FindingRecord.evidence_json` (JSONB) via a
+    `validation_alias` — this proves that mapping actually round-trips
+    through a real Postgres row, not just that the Pydantic model compiles.
+    """
+    token = await _signup_and_get_token(api_client, "evidence-trail@example.com")
+    create_response = await api_client.post(
+        "/analysis", json=_analysis_payload(), headers=_auth_header(token)
+    )
+    run_id = create_response.json()["id"]
+
+    session_dep = app.dependency_overrides[get_db]
+    async for session in session_dep():
+        run = await session.get(AnalysisRun, uuid.UUID(run_id))
+        assert run is not None
+        session.add(
+            FindingRecord(
+                run_id=run.id,
+                file_path="app.py",
+                line_start=2,
+                line_end=2,
+                category=FindingCategory.CORRECTNESS,
+                severity=Severity.HIGH,
+                message="off-by-one",
+                evidence_json=[
+                    {
+                        "file_path": "callers.py",
+                        "line_start": 5,
+                        "line_end": 7,
+                        "reason": "resolved caller of the changed function",
+                    }
+                ],
+                confidence=0.9,
+                agent_name="diff_only",
+            )
+        )
+        await session.commit()
+        break
+
+    response = await api_client.get(f"/analysis/{run_id}", headers=_auth_header(token))
+
+    assert response.status_code == 200
+    findings = response.json()["findings"]
+    assert len(findings) == 1
+    assert findings[0]["evidence"] == [
+        {
+            "file_path": "callers.py",
+            "line_start": 5,
+            "line_end": 7,
+            "reason": "resolved caller of the changed function",
+        }
+    ]
