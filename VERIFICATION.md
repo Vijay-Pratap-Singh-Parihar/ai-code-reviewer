@@ -759,3 +759,33 @@ exactly the steps above, not by reading the library's source, and is fixed in
 `lib/diff-utils.ts`'s `ensureGitDiffHeaders` — a regression test for the exact diff shape lives in
 `lib/diff-utils.test.ts` and `components/diff-viewer.test.tsx`, but verifying the real rendering
 path live once, as above, is what actually caught it.
+
+## Stage 9 (follow-up) — dashboard shell redesign
+
+```bash
+cd apps/web
+npm run lint
+npm run test    # → 56 passed
+npm run build   # production build
+```
+
+### Live, against the running containers (free — no LLM involved)
+
+```bash
+docker compose up --build
+```
+
+1. Sign up, land on the dashboard.
+2. Confirm the sidebar shows **Dashboard** (active) plus **Repositories / Branch Memory /
+   AI Providers / Usage & Budget / History**, each with a "Soon" badge and not clickable.
+3. Confirm a **"Session analytics"** row of 6 stat tiles renders above the trigger forms.
+4. Click the sun/moon icon in the top bar — the whole page should flip to dark (or light)
+   immediately. Open devtools and confirm `<html>` gained/lost the `dark` class.
+5. Click the sidebar-collapse icon (or press `Ctrl`/`Cmd`+`B`) — the sidebar should shrink to
+   icon-only width. Reload the page — the collapsed state should persist (it's stored in a cookie).
+6. Clean up: `docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM
+   organizations WHERE name = '<the org you signed up with>';"`
+
+**Design was approved before this was built**, not after: a one-artboard interactive mockup (sidebar
+collapse and the theme toggle both actually clickable in the mockup) was shown and confirmed first —
+see `IMPLEMENTATION_PLAN.md`'s "Stage 9 (follow-up)" section for why.
