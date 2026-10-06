@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
+import { postLoginPath } from "@/lib/redirect";
 import { useAuth } from "@/components/auth-provider";
 import { formatApiError } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -23,7 +24,7 @@ export function SignupForm() {
     setSubmitting(true);
     try {
       await signup(orgName, email, password);
-      router.replace("/dashboard");
+      router.replace(postLoginPath());
     } catch (err) {
       setError(formatApiError(err));
     } finally {

@@ -25,7 +25,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | ✅ done |
 | 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | ✅ done |
 | 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | ✅ done |
-| 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 (kept as an "Advanced" fallback) | App Week 15 | 🟡 part 1 (backend) done; part 2 (frontend) next |
+| 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 (kept as an "Advanced" fallback) | App Week 15 | ✅ done (real-github.com round trip pending the user's App registration) |
 | 11 | Remaining screens: providers, usage/budget, branch memory UI, comment-posting back to GitHub | App Week 18 | Not started |
 | 12 | Token/cost controls: triage-before-inference, pre-flight estimate gate, content-addressed result cache, tiered model routing, quota ledger | Architecture §3 | Stretch, after 0–11 |
 
@@ -1261,19 +1261,86 @@ against the dev stack covered:
 - A bad signature rejected with 401.
 - An unlinked installation ignored.
 
+## Stage 10 (part 2) — GitHub screens in the frontend
+
+Built on part 1's endpoints:
+
+- **GitHub** (`/github`):
+  - A **Connect GitHub** button that goes to the App's install page.
+  - Connected accounts, each with type, repo count, **Sync repos**, and **Manage on GitHub**
+    (linking to the user or org installation settings).
+  - A clear "not configured" card when the server has no App credentials.
+  - A warning when no webhook secret is set (auto-review would silently never fire).
+- **`/github/setup`**, the App's callback page:
+  - It POSTs `installation_id` + `code` exactly once, then goes to Repositories.
+  - The OAuth code is single-use, and React StrictMode double-runs effects in dev, so a ref plus a
+    module-level "sent codes" set guard against a second POST that would replace a success with a
+    spent-code error. There is a StrictMode test for this.
+  - It explains a missing `code` (the App's OAuth-during-install setting is off), a pending org
+    approval (`setup_action=request`), and API refusals.
+- **Login keeps the GitHub callback alive.** A signed-out or expired session hitting
+  `/github/setup?...` used to bounce to `/login` and drop the single-use code. `ProtectedRoute` now
+  sends `/login?next=<path+query>`, and login, signup and `GuestRoute` return there. `safeNextPath`
+  allows same-origin paths only (`//host` and `/\host` are rejected), so this isn't an open redirect.
+  This is verified in a real browser.
+- **Repositories** (`/repositories` and `/repositories/[repoId]`):
+  - Every connected repo has an **Auto-review** switch, off unless turned on.
+  - Manual-only repos are listed greyed out with a "manual" badge.
+  - The detail page has the auto-review card (with what "on" means: diff_only, billed, drafts
+    skipped).
+  - A **Branch memory** card for the default branch: build or rebuild (free), polling while it
+    builds.
+  - Open PRs live from GitHub with the latest run and whether it covers the current head commit.
+  - A review-depth picker (`cross_file` disabled until an index is ready) and a **Review** /
+    **Review again** button that opens the new run.
+  - A standing "each review makes a billed LLM call" note.
+- **Dashboard**: the repositories overview (or a Connect GitHub call to action) replaces the old
+  "no GitHub yet" text. The two manual forms moved into a collapsed **Advanced: review a pasted diff**
+  section, unchanged.
+- **Run page**: reads the PR title, context and diff from `GET /analysis/{id}`, falling back to
+  sessionStorage only for pre-Stage-10 runs. It says "appears once the worker has fetched it" while a
+  GitHub run is still queued.
+- **Shell**: Repositories and GitHub are real sidebar links. The top bar's section label follows the
+  route; it previously always said "Dashboard", which a screenshot of the repo page exposed.
+
+**Tests:**
+- 32 new Vitest tests, 88 in total:
+  - The setup handler: once under StrictMode, errors, missing code, pending request.
+  - The repository list: empty state, manual vs connected, auto-review toggle round trip.
+  - The PR list: default `diff_only` review → navigate, latest-run labels, GitHub error, empty.
+  - GitHub accounts: unconfigured, install link and installations, webhook warning.
+  - The run page from server data alone; `safeNextPath` and the login round trip; the section
+    labels.
+  - Updated sidebar tests.
+- New Playwright `e2e/github.spec.ts` (3 tests; 6/6 with `auth.spec.ts`), against the rebuilt
+  Docker stack.
+
+**Verified live** (free):
+- The Playwright suite.
+- A throwaway browser check that seeded a fake installation and repo for a fresh org. It confirmed:
+  - The dashboard and repo list render.
+  - Flipping the switch really wrote `auto_review_enabled = true` to Postgres.
+  - The repo page renders the auto-review, branch-memory and PR cards.
+  - Without App credentials, the PR list fails visibly ("GitHub App is not configured") rather than
+    hanging.
+- The org was deleted afterwards; the dev DB is back to its pre-existing rows.
+
+`npm run lint`, `tsc --noEmit`, `npm run build` and `docker compose build web` pass. No backend
+changes, so the Python suite is unchanged at 327.
+
 ## Next action
 
-Stage 10 part 2, the frontend on top of part 1's endpoints:
-- A **GitHub** screen with a "Connect GitHub" button and connected accounts, plus the
-  `/github/setup` callback page that posts `installation_id` + `code`.
-- A **Repositories** screen: the auto-review toggle (off by default), open PRs with each PR's
-  latest run, a "Review" button with the `diff_only`/`cross_file` choice, and "Build index".
-- The run page reads the diff from the API instead of sessionStorage.
-- The manual paste-a-diff form collapses into an "Advanced" section.
-- The Repositories sidebar item becomes a real link.
-
-Then a live round trip against real github.com once the user has registered their App and started
-the smee.io relay.
+1. **Live round trip against real github.com.** This is the user's step:
+   - Register the App (README → "Connecting GitHub").
+   - Start the smee.io relay.
+   - Connect a test repo and open a PR. It should not be reviewed, because auto-review is off.
+   - Click **Review** on it. This is one billed `diff_only` call, so ask before doing it.
+2. **Stage 11:**
+   - AI Providers screen (multi-provider + fallback, per the CodeSense reference above).
+   - Usage & budget.
+   - Branch-memory UI.
+   - Posting findings back to GitHub as PR review comments. This needs the App's Pull requests
+     permission raised to Read & write.
 
 **UI reference gathered for Stage 10/11 (not scope for now):** the user shared a reference design
 (a "CodeSense" mockup) with concrete shapes worth reusing when those stages actually get built —

@@ -171,6 +171,15 @@ export type AnalysisRunPublic = {
   latency_ms: number | null;
   error: string | null;
   findings: FindingPublic[];
+  // PR context, stored server-side since Stage 10. Null for runs created
+  // before then (the run page falls back to run-metadata-store for those).
+  agent?: Agent | null;
+  repo_full_name?: string | null;
+  pr_number?: number | null;
+  pr_title?: string | null;
+  base_branch?: string | null;
+  head_sha?: string | null;
+  diff?: string | null;
 };
 
 export type AnalysisRequest = {
@@ -247,6 +256,103 @@ export function getBranchIndexStatus(
   return apiFetchJson<BranchIndexStatusPublic>(
     `/repos/${repoId}/branches/${encodeURIComponent(branchName)}/index`,
   );
+}
+
+// --- GitHub App (Stage 10) ---------------------------------------------------
+
+export type GitHubAppInfo = {
+  configured: boolean;
+  install_url: string | null;
+  webhook_configured: boolean;
+};
+
+export type InstallationPublic = {
+  id: string;
+  installation_id: number;
+  account_login: string;
+  account_type: string;
+  installed_at: string;
+  repository_count: number;
+};
+
+export type RepositoryPublic = {
+  id: string;
+  full_name: string;
+  default_branch: string;
+  is_active: boolean;
+  connected: boolean;
+  auto_review_enabled: boolean;
+  github_repo_id: number | null;
+};
+
+export type PullRequestSummary = {
+  number: number;
+  title: string;
+  author: string;
+  head_sha: string;
+  base_branch: string;
+  draft: boolean;
+  html_url: string | null;
+  updated_at: string | null;
+  latest_run: { id: string; status: AnalysisRunStatus; agent: string; head_sha: string | null } | null;
+};
+
+export function getGitHubApp(): Promise<GitHubAppInfo> {
+  return apiFetchJson<GitHubAppInfo>("/github/app");
+}
+
+export function listInstallations(): Promise<InstallationPublic[]> {
+  return apiFetchJson<InstallationPublic[]>("/github/installations");
+}
+
+export function linkInstallation(body: { installation_id: number; code: string }): Promise<InstallationPublic> {
+  return apiFetchJson<InstallationPublic>("/github/installations", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function syncInstallation(id: string): Promise<InstallationPublic> {
+  return apiFetchJson<InstallationPublic>(`/github/installations/${id}/sync`, { method: "POST" });
+}
+
+export function listRepositories(): Promise<RepositoryPublic[]> {
+  return apiFetchJson<RepositoryPublic[]>("/repos");
+}
+
+export function updateRepository(
+  repoId: string,
+  body: { auto_review_enabled: boolean },
+): Promise<RepositoryPublic> {
+  return apiFetchJson<RepositoryPublic>(`/repos/${repoId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function listPullRequests(repoId: string): Promise<PullRequestSummary[]> {
+  return apiFetchJson<PullRequestSummary[]>(`/repos/${repoId}/pulls`);
+}
+
+export function reviewPullRequest(
+  repoId: string,
+  number: number,
+  agent: Agent,
+): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>(`/repos/${repoId}/pulls/${number}/analysis`, {
+    method: "POST",
+    body: JSON.stringify({ agent }),
+  });
+}
+
+export function indexRepository(
+  repoId: string,
+  body: { branch_name?: string; force_full?: boolean } = {},
+): Promise<BranchIndexPublic> {
+  return apiFetchJson<BranchIndexPublic>(`/repos/${repoId}/index`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 /** Renders an `ApiError` (or any thrown value) as one user-facing line. */
