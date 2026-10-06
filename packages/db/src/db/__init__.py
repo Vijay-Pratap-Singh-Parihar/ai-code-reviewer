@@ -7,6 +7,7 @@ autogenerate (or `Base.metadata.create_all`) runs.
 
 from db.auth import RefreshToken
 from db.branch_index import BranchIndex, IndexUpdateLog
+from db.github import WebhookDelivery
 from db.ledger import AuditLog, TokenUsageLedger
 from db.organization import GithubInstallation, Organization, User
 from db.provider import AIProvider, ModelRoute
@@ -30,4 +31,5 @@ __all__ = [
     "TokenUsageLedger",
     "TrackedBranch",
     "User",
+    "WebhookDelivery",
 ]

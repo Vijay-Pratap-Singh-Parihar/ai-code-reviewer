@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from db.pull_request import AnalysisRun, FindingRecord
+from db.pull_request import AnalysisRun, FindingRecord, PullRequest
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,9 @@ from api.services import analysis as analysis_service
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
 
-def _to_public(run: AnalysisRun, findings: list[FindingRecord]) -> AnalysisRunPublic:
+def _to_public(
+    run: AnalysisRun, findings: list[FindingRecord], pr: PullRequest, repo_full_name: str
+) -> AnalysisRunPublic:
     return AnalysisRunPublic(
         id=run.id,
         status=run.status,
@@ -23,6 +25,13 @@ def _to_public(run: AnalysisRun, findings: list[FindingRecord]) -> AnalysisRunPu
         latency_ms=run.latency_ms,
         error=run.error,
         findings=[FindingPublic.model_validate(f) for f in findings],
+        agent=str(run.config_snapshot.get("agent", "diff_only")),
+        repo_full_name=repo_full_name,
+        pr_number=pr.number,
+        pr_title=pr.title,
+        base_branch=pr.base_branch,
+        head_sha=str(run.config_snapshot.get("head_sha") or pr.head_sha),
+        diff=run.diff_text,
     )
 
 
@@ -57,7 +66,9 @@ async def trigger_analysis(
     # A run this endpoint just created has no findings yet by definition —
     # accessing `run.findings` here would trigger a lazy load outside an
     # awaited context, which AsyncSession doesn't support.
-    return _to_public(run, findings=[])
+    pr = await db.get(PullRequest, run.pr_id)
+    assert pr is not None  # created in the same request
+    return _to_public(run, findings=[], pr=pr, repo_full_name=body.repo_full_name)
 
 
 @router.get("/{run_id}", response_model=AnalysisRunPublic)
@@ -68,5 +79,6 @@ async def get_analysis(
     if run is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "analysis run not found")
 
-    # get_run_for_org eager-loads findings via selectinload, so this is safe.
-    return _to_public(run, findings=run.findings)
+    # get_run_for_org eager-loads findings, the PR and its repo, so this is safe.
+    pr = run.pull_request
+    return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)

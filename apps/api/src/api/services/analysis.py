@@ -86,8 +86,15 @@ async def create_analysis_run(
     run = AnalysisRun(
         pr_id=pr.id,
         branch_index_id=branch_index_id,
-        config_snapshot={"agent": body.agent, "model": settings.revu_model_review},
+        config_snapshot={
+            "agent": body.agent,
+            "model": settings.revu_model_review,
+            "head_sha": body.head_sha,
+            "source": "manual",
+        },
         status=AnalysisRunStatus.QUEUED,
+        diff_text=body.diff,
+        created_at=datetime.now(UTC),
     )
     session.add(run)
     await session.commit()
@@ -106,7 +113,10 @@ async def get_run_for_org(
         select(AnalysisRun)
         .join(PullRequest, AnalysisRun.pr_id == PullRequest.id)
         .join(Repository, PullRequest.repo_id == Repository.id)
-        .options(selectinload(AnalysisRun.findings))
+        .options(
+            selectinload(AnalysisRun.findings),
+            selectinload(AnalysisRun.pull_request).selectinload(PullRequest.repository),
+        )
         .where(AnalysisRun.id == run_id, Repository.org_id == org_id)
     )
     result: AnalysisRun | None = await session.scalar(stmt)

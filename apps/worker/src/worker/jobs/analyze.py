@@ -56,6 +56,77 @@ async def _run_cross_file(
     return verification.findings
 
 
+async def execute_review(
+    session: AsyncSession,
+    run: AnalysisRun,
+    *,
+    pr_title: str,
+    pr_body: str,
+    diff: str,
+    agent: str,
+    repo_path: str | None,
+) -> None:
+    """The part of a review shared by every trigger path: run the selected
+    reviewer on an already-`running` run, then persist findings and mark it
+    succeeded, or record the error and mark it failed."""
+    model = str(run.config_snapshot.get("model", _DEFAULT_MODEL))
+
+    try:
+        if agent == "cross_file":
+            if not repo_path:
+                raise RuntimeError("agent='cross_file' requires repo_path")
+            findings = await _run_cross_file(
+                run=run, session=session, pr_title=pr_title, pr_body=pr_body,
+                diff=diff, repo_path=repo_path, model=model,
+            )
+        else:
+            result = await review_diff(
+                pr_title=pr_title, pr_body=pr_body, diff=diff, model=model
+            )
+            run.tokens_in = result.tokens_in
+            run.tokens_out = result.tokens_out
+            run.cost_usd = result.cost_usd
+            run.latency_ms = result.latency_ms
+            findings = result.findings
+    except Exception as exc:
+        logger.exception("review of run %s failed", run.id)
+        await mark_run_failed(session, run, exc)
+        return
+
+    for finding in findings:
+        session.add(
+            FindingRecord(
+                run_id=run.id,
+                file_path=finding.file_path,
+                line_start=finding.line_start,
+                line_end=finding.line_end,
+                category=finding.category,
+                severity=finding.severity,
+                message=finding.message,
+                evidence_json=[e.model_dump() for e in finding.evidence],
+                confidence=finding.confidence,
+                agent_name=finding.agent_name,
+            )
+        )
+
+    run.status = AnalysisRunStatus.SUCCEEDED
+    run.finished_at = datetime.now(UTC)
+    await session.commit()
+
+
+async def mark_run_running(session: AsyncSession, run: AnalysisRun) -> None:
+    run.status = AnalysisRunStatus.RUNNING
+    run.started_at = datetime.now(UTC)
+    await session.commit()
+
+
+async def mark_run_failed(session: AsyncSession, run: AnalysisRun, exc: BaseException) -> None:
+    run.status = AnalysisRunStatus.FAILED
+    run.error = str(exc)
+    run.finished_at = datetime.now(UTC)
+    await session.commit()
+
+
 async def analyze_pr(
     ctx: dict[str, Any],
     run_id: str,
@@ -65,11 +136,11 @@ async def analyze_pr(
     agent: str = "diff_only",
     repo_path: str | None = None,
 ) -> None:
-    """Runs the selected reviewer for one analysis run and persists the
-    result. `diff`/`repo_path` are passed as job arguments rather than
-    fetched from GitHub or read off the run row — see `AnalysisRequest`'s
-    docstring for why. `agent` mirrors `AnalysisRequest.agent`: the caller's
-    own cost/depth choice, not something this job escalates on its own.
+    """The manual (diff-paste) trigger path: `diff`/`repo_path` arrive as
+    job arguments from `POST /analysis` — see `AnalysisRequest`'s docstring.
+    GitHub-connected repos use `worker.jobs.github.review_github_pr` instead,
+    which fetches both itself. `agent` is the caller's own cost/depth
+    choice, not something this job escalates on its own.
     """
     session_factory = ctx["db_session_factory"]
 
@@ -79,53 +150,8 @@ async def analyze_pr(
             logger.error("analyze_pr: run %s no longer exists", run_id)
             return
 
-        run.status = AnalysisRunStatus.RUNNING
-        run.started_at = datetime.now(UTC)
-        await session.commit()
-
-        model = str(run.config_snapshot.get("model", _DEFAULT_MODEL))
-
-        try:
-            if agent == "cross_file":
-                if not repo_path:
-                    raise RuntimeError("agent='cross_file' requires repo_path")
-                findings = await _run_cross_file(
-                    run=run, session=session, pr_title=pr_title, pr_body=pr_body,
-                    diff=diff, repo_path=repo_path, model=model,
-                )
-            else:
-                result = await review_diff(
-                    pr_title=pr_title, pr_body=pr_body, diff=diff, model=model
-                )
-                run.tokens_in = result.tokens_in
-                run.tokens_out = result.tokens_out
-                run.cost_usd = result.cost_usd
-                run.latency_ms = result.latency_ms
-                findings = result.findings
-        except Exception as exc:
-            logger.exception("analyze_pr: run %s failed", run_id)
-            run.status = AnalysisRunStatus.FAILED
-            run.error = str(exc)
-            run.finished_at = datetime.now(UTC)
-            await session.commit()
-            return
-
-        for finding in findings:
-            session.add(
-                FindingRecord(
-                    run_id=run.id,
-                    file_path=finding.file_path,
-                    line_start=finding.line_start,
-                    line_end=finding.line_end,
-                    category=finding.category,
-                    severity=finding.severity,
-                    message=finding.message,
-                    evidence_json=[e.model_dump() for e in finding.evidence],
-                    confidence=finding.confidence,
-                    agent_name=finding.agent_name,
-                )
-            )
-
-        run.status = AnalysisRunStatus.SUCCEEDED
-        run.finished_at = datetime.now(UTC)
-        await session.commit()
+        await mark_run_running(session, run)
+        await execute_review(
+            session, run, pr_title=pr_title, pr_body=pr_body, diff=diff,
+            agent=agent, repo_path=repo_path,
+        )

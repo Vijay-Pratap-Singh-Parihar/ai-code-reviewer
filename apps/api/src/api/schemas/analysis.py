@@ -75,3 +75,12 @@ class AnalysisRunPublic(BaseModel):
     latency_ms: int | None
     error: str | None
     findings: list[FindingPublic] = Field(default_factory=list)
+    # Context for the PR analysis view (Stage 10): with these the page no
+    # longer depends on metadata the triggering browser kept in sessionStorage.
+    agent: str | None = None
+    repo_full_name: str | None = None
+    pr_number: int | None = None
+    pr_title: str | None = None
+    base_branch: str | None = None
+    head_sha: str | None = None
+    diff: str | None = None

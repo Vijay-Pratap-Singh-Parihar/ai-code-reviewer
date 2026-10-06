@@ -1,15 +1,19 @@
 import enum
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from revu.models import FindingCategory, Severity
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db._enum import pg_enum
 from db.base import Base
-from db.mixins import TZDateTime, UUIDPrimaryKeyMixin
+from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
+
+if TYPE_CHECKING:
+    from db.repository import Repository
 
 
 class PullRequestState(enum.StrEnum):
@@ -33,6 +37,9 @@ class DeveloperAction(enum.StrEnum):
 
 class PullRequest(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "pull_requests"
+    # Webhook deliveries for the same PR can race; the constraint makes the
+    # upsert in api.services.github safe rather than relying on a pre-check.
+    __table_args__ = (UniqueConstraint("repo_id", "number", name="uq_pull_requests_repo_number"),)
 
     repo_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
@@ -50,12 +57,13 @@ class PullRequest(UUIDPrimaryKeyMixin, Base):
     opened_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
     merged_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
+    repository: Mapped["Repository"] = relationship()
     analysis_runs: Mapped[list["AnalysisRun"]] = relationship(
         back_populates="pull_request", cascade="all, delete-orphan"
     )
 
 
-class AnalysisRun(UUIDPrimaryKeyMixin, Base):
+class AnalysisRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "analysis_runs"
 
     pr_id: Mapped[uuid.UUID] = mapped_column(
@@ -79,6 +87,9 @@ class AnalysisRun(UUIDPrimaryKeyMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     finished_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     error: Mapped[str | None] = mapped_column(Text)
+    # The exact diff this run reviewed, so the PR view can render it from the
+    # server instead of relying on the browser that triggered the run.
+    diff_text: Mapped[str | None] = mapped_column(Text)
 
     pull_request: Mapped[PullRequest] = relationship(back_populates="analysis_runs")
     findings: Mapped[list["FindingRecord"]] = relationship(

@@ -6,7 +6,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 
 **Locked decisions for this track:**
 - Indexer language support: **Python only** (no JS/TS grammar work).
-- GitHub integration: **stubbed** — analysis is triggered via a plain REST endpoint, not real GitHub App webhooks, until Stage 10.
+- GitHub integration: **stubbed** until Stage 10, with analysis triggered via a plain REST endpoint. Stage 10 adds the real GitHub App and keeps the REST trigger as a manual fallback.
 - The academic benchmarking track (AACR-Bench, external baselines, ablations, statistics, thesis tables) is **out of scope** for this track entirely — see "Not covered" below. It's a separate, parallel effort if ever needed.
 
 ---
@@ -25,7 +25,7 @@ The roadmap builds the research engine for 13 weeks before touching the applicat
 | 7 | Cross-file agent + tool layer (`read_file`, `graph_query`, `find_definition`, `find_callers`), replacing the diff-only reviewer as the default | Roadmap Phase 5 (subset) | ✅ done |
 | 8 | Verifier/aggregator: dedup, evidence resolution against the graph, confidence scoring, threshold + comment cap | Roadmap Phase 6 | ✅ done |
 | 9 | Next.js frontend: auth, dashboard, **PR analysis view with diff + findings + evidence trail** | App Week 17 | ✅ done |
-| 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 | App Week 15 | Not started |
+| 10 | Real GitHub App: registration, webhook receiver + signature verification, installation flow — replaces the manual trigger from Stage 3 (kept as an "Advanced" fallback) | App Week 15 | 🟡 part 1 (backend) done; part 2 (frontend) next |
 | 11 | Remaining screens: providers, usage/budget, branch memory UI, comment-posting back to GitHub | App Week 18 | Not started |
 | 12 | Token/cost controls: triage-before-inference, pre-flight estimate gate, content-addressed result cache, tiered model routing, quota ledger | Architecture §3 | Stretch, after 0–11 |
 
@@ -1142,10 +1142,138 @@ new shell unchanged, confirming no regression. Test org cleaned up from the dev 
 Verified: `ruff`/`mypy`/`pytest` unaffected (no backend changes this round); `npm run lint`,
 `npm run test` (**56/56**, 16 new), `npm run build`, and `docker compose build web` all pass.
 
+## Stage 10 (part 1) — GitHub App backend
+
+The user decided:
+- **Auto-review on PR open is configurable per repository and off by default.** Every review is
+  billed LLM spend, so it is opt-in.
+- smee.io is the local webhook tunnel.
+- The manual diff-paste trigger stays as an "Advanced" fallback.
+- Stage 10 ships as two stacked PRs: backend (this one), then frontend.
+
+Built:
+
+- **`packages/ghapp`**, a new workspace member shared by api and worker:
+  - `auth.py`: RS256 App JWT. `iat` is backdated 60s for clock drift and the lifetime is 9 min,
+    under GitHub's 10-minute cap.
+  - `webhooks.py`: HMAC-SHA256 signing and verification with `hmac.compare_digest`. An unset
+    secret never verifies.
+  - `client.py`: a minimal async `httpx` REST client. It covers installation tokens, installation
+    repos, open PRs, a single PR, the PR diff (`application/vnd.github.diff`), the OAuth code
+    exchange and `/user/installations`, with Link-header pagination and capped page count.
+  - Every repo-reading method takes the installation token as an argument rather than holding one,
+    so one installation's token can't silently be used against another's repos.
+- **Schema** (migration `86bf719221ef`, verified upgrade → downgrade → upgrade, and
+  `alembic check` clean):
+  - `repositories.github_repo_id` (BigInteger, unique; stable across renames).
+  - `repositories.auto_review_enabled` (server default `false`).
+  - `analysis_runs.diff_text` and `analysis_runs.created_at`.
+  - `github_installations.account_type`, and `installation_id` widened from Integer to BigInteger.
+    GitHub IDs are 64-bit; the test uses an ID above 2^31.
+  - A unique `(repo_id, number)` constraint on `pull_requests`. Webhook deliveries can race.
+  - New `webhook_deliveries` table.
+- **Linking an installation securely.** GitHub's setup redirect carries `installation_id` in the
+  URL, so anyone could paste someone else's ID. `POST /github/installations` therefore requires the
+  OAuth `code` from the same redirect (the App must have "Request user authorization during
+  installation" on). It exchanges the code for a user token and only links the installation if it
+  appears in that user's `GET /user/installations`. An installation already linked to another org
+  returns 409.
+- **Repository sync.**
+  - Repos are matched by GitHub's numeric ID first, then by `full_name`. This lets a repo created
+    earlier by the manual flow be adopted rather than duplicated.
+  - A repo row owned by another org is never moved.
+  - Repos the installation can no longer see are deactivated, not deleted, so run history survives.
+- **`POST /github/webhook`.**
+  - It is unauthenticated by design, so the signature over the raw bytes is the only gate and is
+    checked before JSON parsing. It returns 503 when no secret is configured, so a misconfigured
+    deployment fails loudly instead of accepting unsigned input.
+  - Deliveries are de-duplicated by `X-GitHub-Delivery` using `INSERT ... ON CONFLICT DO NOTHING`,
+    so two concurrent redeliveries can't both pass.
+  - The delivery row commits in the same transaction as the handling. A malformed payload (400)
+    rolls back its delivery record, so a later redelivery is processed instead of skipped.
+  - Handled events:
+    - `pull_request`: upserts the PR. An auto-review is queued only if the repo opted in, the PR
+      isn't a draft, and that exact head SHA hasn't already been reviewed (so reopen and redelivery
+      don't pay twice). Auto-review is always `diff_only`.
+    - `push`: on the default branch, it refreshes the index, but only for repos already indexed
+      once.
+    - `installation` deleted/suspend/unsuspend.
+    - `installation_repositories` added/removed.
+  - Events for installations not linked to any org are recorded and ignored.
+- **Connected-repo endpoints:**
+  - `GET /repos`.
+  - `PATCH /repos/{id}` for the auto-review toggle.
+  - `GET /repos/{id}/pulls`: live from GitHub, merged with revu's latest run per PR.
+  - `POST /repos/{id}/pulls/{number}/analysis`: no diff or path supplied; `cross_file` without a
+    ready index returns 409.
+  - `POST /repos/{id}/index`.
+  - All are org-scoped. Another org gets 404, never 403.
+  - A manual-only repo gets 409 on the GitHub-only endpoints.
+- **Worker.**
+  - `review_github_pr` fetches the PR and its diff with an installation token and stores the diff
+    on the run. It records the head SHA the diff actually describes, since the PR may have moved
+    after queueing.
+  - For `cross_file` it fetches `refs/pull/N/head` into a local repo cache and reviews a temporary
+    worktree of that SHA, removed afterwards.
+  - `sync_and_index_branch` fetches the branch, then hands off to the existing
+    `update_branch_index`.
+  - `analyze_pr`'s core was split out as `execute_review` so the manual and GitHub paths share one
+    implementation of "run reviewer → persist findings → mark status".
+- **The token never touches disk or argv.** `worker/repo_cache.py` passes the installation token to
+  git as an `http.extraHeader` through `GIT_CONFIG_*` environment variables, not in the clone URL.
+  It therefore never lands in `.git/config`, in `ps` output, or in git's error messages (which echo
+  the URL). Tests assert this on a real fetch.
+- **The PR view no longer depends on browser storage.** `GET /analysis/{id}` now returns the diff,
+  agent, repo, PR number/title, base branch and head SHA. The frontend switches to these in part 2.
+- **Docker.**
+  - Both images copy `packages/ghapp`.
+  - The worker gets a named `revu_data` volume for index blobs and the repo cache
+    (`REVU_INDEX_STORAGE_DIR=/data/index`, `REVU_REPO_CACHE_DIR=/data/repos`). Previously index
+    blobs lived in the container filesystem and were lost on every rebuild, leaving dangling
+    `graph_ref`s.
+  - `./.secrets` (git-ignored) is mounted read-only for the App's private key.
+
+**Tests** (53 new; 327 total):
+- 18 `ghapp` unit tests: a real RSA key and JWT decode, real HMAC, `httpx.MockTransport` for the
+  client including pagination.
+- 25 API tests with a fake GitHub injected through the `get_github_client` dependency and
+  HMAC-signed webhooks.
+- 9 worker tests against a real local git "remote" with a real `refs/pull/1/head` ref. They include
+  a real fetch, worktree and index build, and assert the token is absent from `.git/config` and
+  from git errors.
+- 1 manual-path regression test (diff and PR context returned from `GET /analysis/{id}`).
+- A mutation check confirmed that removing the auto-review-off guard or the OAuth installation
+  check each makes a test fail.
+- No test or live check made an LLM call.
+
+**One pre-existing fixture updated, not a regression:**
+- `packages/engine/tests/fixtures/verified_edges.yaml` hand-verifies call edges at exact line
+  numbers in this repo's own source. The `analyze_pr` → `execute_review` split moved two call
+  sites, and the router edits moved two more.
+- The fixture was re-pointed to the new caller and lines. Each was re-checked against the source.
+
+**Not yet verified:** a round trip against real github.com. That needs the user's own App
+registration (README → "Connecting GitHub"), which is a step for them, not code. The live check
+against the dev stack covered:
+- `GET /github/app` while unconfigured.
+- 503 on GitHub-dependent endpoints.
+- A signed ping, then its redelivery detected as a duplicate.
+- A bad signature rejected with 401.
+- An unlinked installation ignored.
+
 ## Next action
 
-Stage 10 — the real GitHub App: registration, webhook receiver with signature verification, and the
-installation flow, replacing the manual "paste the diff" trigger that's stood in since Stage 3.
+Stage 10 part 2, the frontend on top of part 1's endpoints:
+- A **GitHub** screen with a "Connect GitHub" button and connected accounts, plus the
+  `/github/setup` callback page that posts `installation_id` + `code`.
+- A **Repositories** screen: the auto-review toggle (off by default), open PRs with each PR's
+  latest run, a "Review" button with the `diff_only`/`cross_file` choice, and "Build index".
+- The run page reads the diff from the API instead of sessionStorage.
+- The manual paste-a-diff form collapses into an "Advanced" section.
+- The Repositories sidebar item becomes a real link.
+
+Then a live round trip against real github.com once the user has registered their App and started
+the smee.io relay.
 
 **UI reference gathered for Stage 10/11 (not scope for now):** the user shared a reference design
 (a "CodeSense" mockup) with concrete shapes worth reusing when those stages actually get built —
