@@ -14,6 +14,9 @@ build/
 
 # revu.index's default local graph-blob cache (REVU_INDEX_STORAGE_DIR)
 .revu/
+# GitHub App private key(s), mounted read-only into api/worker containers
+.secrets/
+*.private-key.pem
 
 # uv
 uv.lock.bak

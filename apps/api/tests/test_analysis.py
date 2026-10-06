@@ -298,3 +298,20 @@ async def test_get_analysis_includes_each_finding_s_evidence_trail(
             "reason": "resolved caller of the changed function",
         }
     ]
+
+
+async def test_get_analysis_returns_stored_diff_and_pr_context(api_client: AsyncClient) -> None:
+    """Stage 10: the PR view renders from the server, not browser storage."""
+    token = await _signup_and_get_token(api_client, "context@example.com")
+    payload = _analysis_payload()
+    created = await api_client.post("/analysis", json=payload, headers=_auth_header(token))
+
+    run_id = created.json()["id"]
+    response = await api_client.get(f"/analysis/{run_id}", headers=_auth_header(token))
+
+    body = response.json()
+    assert body["diff"] == payload["diff"]
+    assert body["agent"] == "diff_only"
+    assert body["repo_full_name"] == "acme/widgets"
+    assert (body["pr_number"], body["pr_title"]) == (1, "Fix off-by-one")
+    assert (body["base_branch"], body["head_sha"]) == ("main", "abc1234")

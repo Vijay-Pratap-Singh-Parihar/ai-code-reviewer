@@ -15,8 +15,8 @@ uv sync --all-packages --group dev
 
 ```bash
 uv run ruff check .                                                              # → All checks passed!
-uv run mypy packages/engine/src packages/db/src apps/api/src apps/worker/src    # → Success: no issues found
-uv run pytest -v                                                                 # → 225 passed
+uv run mypy packages/engine/src packages/db/src packages/ghapp/src apps/api/src apps/worker/src  # → Success: no issues found
+uv run pytest -v                                                                 # → 327 passed
 ```
 
 `apps/api/tests/test_models_db.py`, `test_auth.py`, `test_analysis.py`, and
@@ -789,3 +789,84 @@ docker compose up --build
 **Design was approved before this was built**, not after: a one-artboard interactive mockup (sidebar
 collapse and the theme toggle both actually clickable in the mockup) was shown and confirmed first —
 see `IMPLEMENTATION_PLAN.md`'s "Stage 9 (follow-up)" section for why.
+
+## Stage 10 (part 1) — GitHub App backend
+
+### Automated (no GitHub account, no LLM)
+
+```bash
+uv run pytest packages/ghapp/tests apps/api/tests/test_github.py apps/worker/tests/test_github_jobs.py -q
+# → 52 passed
+```
+
+- **`packages/ghapp/tests`:**
+  - The App JWT is decoded with the matching public key; `iat` is backdated and the lifetime is
+    under 10 min.
+  - HMAC signatures round-trip; tampered bodies, wrong secrets, missing headers and an empty secret
+    are all rejected.
+  - Client pagination follows `Link: rel="next"`.
+- **`apps/api/tests/test_github.py`:** GitHub is faked behind the `get_github_client` dependency,
+  and webhooks carry real HMAC signatures. It covers:
+  - Linking succeeds only when the OAuth user can see the installation (403 otherwise, 409 if
+    another org owns it).
+  - Repos sync with auto-review **off**.
+  - A PR `opened` does nothing until auto-review is enabled.
+  - Once enabled, the same delivery or the same head SHA is never reviewed twice.
+  - Drafts are skipped.
+  - A malformed payload is 400 and doesn't burn its delivery ID.
+  - Push refreshes only indexed default branches.
+  - Org isolation: a stranger gets 404 everywhere.
+- **`apps/worker/tests/test_github_jobs.py`:** a real local git repo stands in for github.com,
+  with a real `refs/pull/1/head`. It covers:
+  - `diff_only` stores the fetched diff and records the PR's actual head.
+  - `cross_file` reviews a worktree of the PR head (not `main`), and the worktree is removed
+    afterwards.
+  - `sync_and_index_branch` builds a real `ready` index from the fetched branch.
+  - The installation token is never written to `.git/config` or echoed in git errors.
+
+Migration round trip against the dev DB:
+
+```bash
+cd apps/api
+uv run alembic downgrade -1 && uv run alembic upgrade head && uv run alembic check
+# → "No new upgrade operations detected."
+```
+
+### Live, against the running containers (free; GitHub App not yet registered)
+
+```bash
+docker compose up -d --build api worker
+docker compose logs worker | grep "Starting worker"
+# → Starting worker for 6 functions: ping, db_ping, analyze_pr, update_branch_index,
+#   review_github_pr, sync_and_index_branch
+```
+
+With `TOKEN` from `/auth/login`:
+
+```bash
+curl -s localhost:8000/github/app -H "Authorization: Bearer $TOKEN"
+# → {"configured":false,"install_url":null,"webhook_configured":false}
+curl -s -X POST localhost:8000/github/webhook -H "X-GitHub-Event: ping" -H "X-GitHub-Delivery: x" -d '{}'
+# → 503 {"detail":"webhook secret not configured"}   (fails loudly rather than accepting unsigned input)
+```
+
+With `GITHUB_WEBHOOK_SECRET` set, a correctly signed `ping`:
+- Returns `processed`.
+- Re-sending it with the same `X-GitHub-Delivery` returns `duplicate`.
+- A wrong signature returns 401.
+
+### Live, against real github.com (needs your own App: README → "Connecting GitHub")
+
+1. Register the App, fill in `.env`, put the `.pem` in `./.secrets/`, then run
+   `docker compose up -d api worker` and the smee relay.
+2. Install the App on a test repo. GitHub redirects to `/github/setup?code=...&installation_id=...`.
+   Until the part 2 UI exists, `POST` those two values to `/github/installations`. Then
+   `GET /repos` lists the repo with `auto_review_enabled: false`.
+3. Open a PR on the repo. smee shows the delivery, and the API answers
+   `"auto-review is disabled for this repository"`. No run is created, so nothing is spent.
+4. `GET /repos/{id}/pulls` lists the PR live from GitHub.
+5. **Billed step, only on purpose:**
+   - `POST /repos/{id}/pulls/{n}/analysis` reviews it. The run's `GET /analysis/{id}` includes the
+     real diff GitHub returned.
+   - Or `PATCH /repos/{id}` with `{"auto_review_enabled": true}` and push a commit to the PR to see
+     the webhook queue the review itself.

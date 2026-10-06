@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import BigInteger, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -57,7 +57,11 @@ class GithubInstallation(UUIDPrimaryKeyMixin, Base):
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
-    installation_id: Mapped[int] = mapped_column(unique=True, nullable=False)
+    # GitHub IDs are 64-bit; BigInteger since Stage 10 (was Integer).
+    installation_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     account_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_type: Mapped[str] = mapped_column(
+        String(32), default="User", server_default="User", nullable=False
+    )
     permissions: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     installed_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)

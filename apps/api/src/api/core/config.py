@@ -36,9 +36,33 @@ class Settings(BaseSettings):
     # exactly which model produced it regardless of later config changes.
     revu_model_review: str = "claude-sonnet-5"
 
+    # GitHub App (Stage 10). All optional: with them unset the API still runs
+    # and the manual diff-paste flow still works; `/github/*` reports the App
+    # as not configured. The private key comes from a file path (preferred) or
+    # inline PEM text with literal "\n" escapes.
+    github_app_id: str = ""
+    github_app_slug: str = ""
+    github_app_private_key: str = ""
+    github_app_private_key_path: str = ""
+    github_webhook_secret: str = ""
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_api_url: str = "https://api.github.com"
+    github_web_url: str = "https://github.com"
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
+
+    @property
+    def github_app_configured(self) -> bool:
+        return bool(
+            self.github_app_id
+            and self.github_app_slug
+            and (self.github_app_private_key or self.github_app_private_key_path)
+            and self.github_client_id
+            and self.github_client_secret
+        )
 
 
 @lru_cache

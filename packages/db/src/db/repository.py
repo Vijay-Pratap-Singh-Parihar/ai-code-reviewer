@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import BigInteger, Boolean, ForeignKey, String, false
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -17,10 +17,18 @@ class Repository(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     installation_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("github_installations.id", ondelete="SET NULL")
     )
+    # Set for repos synced from a GitHub App installation; NULL for repos
+    # created by the manual diff-paste path. Stable across repo renames.
+    github_repo_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     full_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     default_branch: Mapped[str] = mapped_column(String(255), default="main", nullable=False)
     languages: Mapped[list[str]] = mapped_column(ARRAY(String), default=list, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Reviewing on every PR open/push costs real LLM tokens, so it is opt-in
+    # per repository: off by default, toggled from the Repositories screen.
+    auto_review_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
     config_json: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
 
     tracked_branches: Mapped[list["TrackedBranch"]] = relationship(

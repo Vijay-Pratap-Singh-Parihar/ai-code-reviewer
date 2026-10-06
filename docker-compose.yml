@@ -38,6 +38,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://revu:revu_dev_password@postgres:5432/revu}
       DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql+psycopg://revu:revu_dev_password@postgres:5432/revu}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    volumes:
+      # Drop the GitHub App's downloaded .pem here and point
+      # GITHUB_APP_PRIVATE_KEY_PATH at /run/revu-secrets/<file>.pem.
+      - ./.secrets:/run/revu-secrets:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -56,6 +60,13 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://revu:revu_dev_password@postgres:5432/revu}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Index blobs and the GitHub repo cache live on a named volume so they
+      # survive image rebuilds (BranchIndex.graph_ref stores these paths).
+      REVU_INDEX_STORAGE_DIR: /data/index
+      REVU_REPO_CACHE_DIR: /data/repos
+    volumes:
+      - revu_data:/data
+      - ./.secrets:/run/revu-secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,3 +94,4 @@ services:
 
 volumes:
   postgres_data:
+  revu_data:

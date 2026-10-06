@@ -18,11 +18,13 @@ dependencies = [
     "cryptography>=43.0.3",
     "revu",
     "db",
+    "ghapp",
 ]
 
 [tool.uv.sources]
 revu = { workspace = true }
 db = { workspace = true }
+ghapp = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

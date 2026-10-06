@@ -12,6 +12,7 @@ apps/worker/     ARQ background worker (runs analysis jobs against the engine)
 apps/web/        Next.js frontend
 packages/engine/ "revu" — the review engine: providers, agents, indexer, context, verifier
 packages/db/     "db" — shared SQLAlchemy models + declarative Base
+packages/ghapp/  "ghapp" — GitHub App auth (JWT, installation tokens), webhook signatures, REST client
 ```
 
 `apps/api` and `apps/worker` both depend on `packages/engine` (`revu`) and `packages/db` (`db`)
@@ -57,7 +58,7 @@ docker compose up --build
 uv sync --all-packages --group dev
 uv run pytest
 uv run ruff check .
-uv run mypy packages/engine/src packages/db/src apps/api/src apps/worker/src
+uv run mypy packages/engine/src packages/db/src packages/ghapp/src apps/api/src apps/worker/src
 
 # Run the API directly
 uv run --package api uvicorn api.main:app --reload --app-dir apps/api/src
@@ -128,7 +129,9 @@ repo's shape rather than massaged).
 
 ## Triggering an analysis
 
-There's no GitHub integration yet (Stage 10), so a caller supplies the diff directly:
+This is the **manual** path, where the caller supplies the diff directly. It predates the GitHub App
+and stays as a fallback that needs no GitHub setup. For connected repositories, see
+"Connecting GitHub (Stage 10)" below, where the server fetches the diff itself.
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8000/auth/signup \
@@ -168,10 +171,10 @@ curl -s -X POST http://localhost:8000/analysis \
 ## Branch memory (Stage 5)
 
 `BranchIndex`/`IndexUpdateLog` now have a real row lifecycle, wired end to end: trigger a build via
-the API, the worker does the actual git/indexing work, results land in Postgres. Still no real
-GitHub webhook (Stage 10) — the caller supplies a filesystem path to a git repository the **worker
-process** can read, the same intentional simplification as Stage 3's "caller supplies the diff
-directly."
+the API, the worker does the actual git/indexing work, results land in Postgres. The endpoint below
+is the manual path: the caller supplies a filesystem path to a git repository the **worker process**
+can read. For GitHub-connected repos, `POST /repos/{id}/index` fetches the code itself, and a push to
+the default branch keeps the index fresh (see "Connecting GitHub (Stage 10)").
 
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:8000/auth/signup \
@@ -310,13 +313,108 @@ The dashboard's "Trigger a review" form picks `agent: diff_only | cross_file` pe
 cost/depth choice `POST /analysis` exposes — **submitting it against a real backend makes a real,
 billed LLM call**, the same as `curl`-ing the endpoint directly, so don't trigger it against a
 real API key without meaning to. Click into any triggered run to see the PR analysis view
-(`/runs/[runId]`) — note that the diff itself only renders for runs triggered in the current browser
-tab's session (it isn't persisted server-side; see `IMPLEMENTATION_PLAN.md`'s Stage 9 part 3 section),
-findings and their evidence trail always work since those come from the real API response.
+(`/runs/[runId]`). As of Stage 10 the API stores each run's diff and returns it from
+`GET /analysis/{id}`. Until Stage 10 part 2 switches the page over, the frontend still renders the
+diff only for runs triggered in the current tab. Findings and their evidence trail always render.
 
-Onboarding (installing the GitHub App, picking repositories) isn't buildable yet — Stage 10 — so the
-dashboard's manual trigger form stands in for it, matching this project's running theme of
-app-first simplification over the original roadmap's ordering.
+The GitHub onboarding screens (install the App, pick repositories, toggle auto-review, review a PR
+with one click) are Stage 10 part 2. The backend for them is in place (see "Connecting GitHub" below).
+
+## Connecting GitHub (Stage 10)
+
+revu connects to GitHub as a **GitHub App**. Once installed on an account, revu lists that account's
+repositories, shows each repo's open PRs, and reviews a PR on demand: the server fetches the diff
+(and, for `cross_file`, the code) itself, so nobody pastes anything. This is entirely optional. With
+the `GITHUB_*` variables blank, the app runs exactly as before and the manual "paste a diff" flow
+still works.
+
+**Auto-review is off by default for every repository.** A review makes billed LLM calls, so reviewing
+on every PR open or push is opt-in per repo (`PATCH /repos/{id}` with `{"auto_review_enabled": true}`,
+or a toggle in the UI once Stage 10 part 2 ships). Even when it's on:
+- Draft PRs are skipped.
+- A head commit that has already been reviewed is never reviewed twice.
+- Auto-review always uses the cheaper `diff_only` reviewer. `cross_file` is always an explicit
+  per-PR choice.
+
+### 1. Register a GitHub App (once)
+
+GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App**:
+
+| Field | Value |
+|---|---|
+| GitHub App name | anything unique, e.g. `revu-dev-<yourname>` (its URL slug becomes `GITHUB_APP_SLUG`) |
+| Homepage URL | `http://localhost:3000` |
+| Callback URL | `http://localhost:3000/github/setup` |
+| Request user authorization (OAuth) during installation | **checked**. revu uses this to verify that the person installing really owns the installation |
+| Webhook → Active | checked, URL = your smee.io channel (step 2), secret = a random string you also put in `GITHUB_WEBHOOK_SECRET` |
+| Repository permissions | **Contents: Read-only**, **Pull requests: Read-only** (Metadata: Read-only is added automatically) |
+| Subscribe to events | **Pull request**, **Push** (installation events are always delivered to Apps) |
+| Where can this App be installed | Only on this account |
+
+After creating it:
+1. Note the **App ID** and **Client ID**.
+2. **Generate a new client secret.**
+3. **Generate a private key.** A `.pem` file downloads. Move it into `./.secrets/` at the repo
+   root (git-ignored).
+
+Then fill in `.env`:
+
+```bash
+GITHUB_APP_ID=123456
+GITHUB_APP_SLUG=revu-dev-yourname
+GITHUB_APP_PRIVATE_KEY_PATH=/run/revu-secrets/revu-dev-yourname.private-key.pem  # Docker path
+GITHUB_WEBHOOK_SECRET=<the random string from the webhook field>
+GITHUB_CLIENT_ID=Iv23...
+GITHUB_CLIENT_SECRET=<the generated client secret>
+```
+
+Docker Compose mounts `./.secrets` read-only at `/run/revu-secrets` in the api and worker containers.
+If you run the API or worker outside Docker, point `GITHUB_APP_PRIVATE_KEY_PATH` at the host path
+instead.
+
+### 2. Forward webhooks to your laptop with smee.io
+
+GitHub can't reach `localhost`, so a free [smee.io](https://smee.io) channel relays deliveries:
+
+```bash
+# Open https://smee.io/new once and copy the channel URL; use it as the App's webhook URL.
+npx smee-client --url https://smee.io/<your-channel> --target http://localhost:8000/github/webhook
+```
+
+Every delivery is checked against `GITHUB_WEBHOOK_SECRET` (HMAC-SHA256, `X-Hub-Signature-256`)
+before its body is parsed. Deliveries are de-duplicated by `X-GitHub-Delivery`, so GitHub's retries
+and manual redeliveries never queue a second review.
+
+### 3. Install the App and link it to your revu organization
+
+`GET /github/app` returns the install link (`https://github.com/apps/<slug>/installations/new`).
+After you pick repositories, GitHub redirects to `http://localhost:3000/github/setup?code=...&installation_id=...`.
+That page passes both values to `POST /github/installations`. The server then:
+1. Exchanges `code` for a user token.
+2. Checks that the installation appears in that user's `GET /user/installations`. The
+   `installation_id` in the URL alone is never trusted.
+3. Syncs the installation's repositories.
+
+> Until Stage 10 part 2 ships the `/github/setup` page, copy the two query parameters from the
+> redirect URL and call the endpoint directly:
+> `curl -X POST localhost:8000/github/installations -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"installation_id": <id>, "code": "<code>"}'`
+> The code is single-use and expires after about 10 minutes.
+
+### Endpoints
+
+| Endpoint | What it does |
+|---|---|
+| `GET /github/app` | whether the App is configured, plus the install URL |
+| `GET /github/installations` · `POST /github/installations` | list and link installations |
+| `POST /github/installations/{id}/sync` | full re-sync of an installation's repositories |
+| `POST /github/webhook` | GitHub → revu (signature-verified, unauthenticated by design) |
+| `GET /repos` · `PATCH /repos/{id}` | list the org's repos; toggle `auto_review_enabled` |
+| `GET /repos/{id}/pulls` | open PRs, live from GitHub, each with revu's latest run for it |
+| `POST /repos/{id}/pulls/{number}/analysis` | review a PR (`{"agent": "diff_only" \| "cross_file"}`; `cross_file` needs a ready index → else 409) |
+| `POST /repos/{id}/index` | build or refresh branch memory from GitHub (defaults to the repo's default branch) |
+
+A push to the default branch refreshes its index automatically, but only for repos that were
+indexed at least once.
 
 ## Manual and automated UI testing
 

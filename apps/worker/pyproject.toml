@@ -10,11 +10,13 @@ dependencies = [
     "pydantic-settings>=2.6.1",
     "revu",
     "db",
+    "ghapp",
 ]
 
 [tool.uv.sources]
 revu = { workspace = true }
 db = { workspace = true }
+ghapp = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
