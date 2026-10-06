@@ -39,11 +39,24 @@ describe("AppSidebar", () => {
     expect(link).toHaveAttribute("data-active");
   });
 
+  it("renders Repositories and GitHub as real links, active on their sub-pages", () => {
+    pathname = "/repositories/repo-1";
+    renderSidebar();
+
+    const repos = screen.getByRole("link", { name: /repositories/i });
+    expect(repos).toHaveAttribute("href", "/repositories");
+    expect(repos).toHaveAttribute("data-active");
+    const github = screen.getByRole("link", { name: /github/i });
+    expect(github).toHaveAttribute("href", "/github");
+    expect(github).not.toHaveAttribute("data-active");
+    expect(screen.getByRole("link", { name: /dashboard/i })).not.toHaveAttribute("data-active");
+  });
+
   it("renders the planned sections as disabled, non-navigating items with a Soon badge", () => {
     pathname = "/dashboard";
     renderSidebar();
 
-    for (const label of ["Repositories", "Branch Memory", "AI Providers", "Usage & Budget", "History"]) {
+    for (const label of ["Branch Memory", "AI Providers", "Usage & Budget", "History"]) {
       const button = screen.getByRole("button", { name: new RegExp(label) });
       // The tooltip wrapper needs the button to still fire hover events, so
       // "disabled" here renders as a data-trigger-disabled marker (styled
@@ -51,6 +64,6 @@ describe("AppSidebar", () => {
       // attribute.
       expect(button).toHaveAttribute("data-trigger-disabled");
     }
-    expect(screen.getAllByText("Soon")).toHaveLength(5);
+    expect(screen.getAllByText("Soon")).toHaveLength(4);
   });
 });

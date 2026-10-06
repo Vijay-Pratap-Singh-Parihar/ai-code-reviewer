@@ -860,8 +860,8 @@ With `GITHUB_WEBHOOK_SECRET` set, a correctly signed `ping`:
 1. Register the App, fill in `.env`, put the `.pem` in `./.secrets/`, then run
    `docker compose up -d api worker` and the smee relay.
 2. Install the App on a test repo. GitHub redirects to `/github/setup?code=...&installation_id=...`.
-   Until the part 2 UI exists, `POST` those two values to `/github/installations`. Then
-   `GET /repos` lists the repo with `auto_review_enabled: false`.
+   That page links the installation and lands on **Repositories**, with the repo's Auto-review
+   switch off.
 3. Open a PR on the repo. smee shows the delivery, and the API answers
    `"auto-review is disabled for this repository"`. No run is created, so nothing is spent.
 4. `GET /repos/{id}/pulls` lists the PR live from GitHub.
@@ -870,3 +870,26 @@ With `GITHUB_WEBHOOK_SECRET` set, a correctly signed `ping`:
      real diff GitHub returned.
    - Or `PATCH /repos/{id}` with `{"auto_review_enabled": true}` and push a commit to the PR to see
      the webhook queue the review itself.
+
+## Stage 10 (part 2) — GitHub screens
+
+```bash
+cd apps/web
+npm run lint && npx tsc --noEmit && npm run test   # → 88 passed
+npm run build                                      # → /github, /github/setup, /repositories, /repositories/[repoId]
+cd ../.. && docker compose build web && docker compose up -d web
+cd apps/web && npm run test:e2e                    # → 6 passed (auth.spec.ts + github.spec.ts)
+```
+
+By hand, without a GitHub App:
+1. Sign up. The dashboard shows **Connect GitHub** under Repositories, and **Advanced: review a
+   pasted diff** is collapsed.
+2. **Repositories** in the sidebar shows the empty state. **GitHub** shows "GitHub App not
+   configured".
+3. Sign out, then open `http://localhost:3000/github/setup?installation_id=1&code=x`. You're sent to
+   `/login?next=...`. After signing in you're back on `/github/setup`, which shows *"Couldn't connect
+   this installation: GitHub App is not configured"*. This proves the callback survives a login.
+4. `http://localhost:3000/login?next=//evil.example.com`: signing in lands on `/dashboard`.
+
+With a GitHub App, see the Stage 10 (part 1) "against real github.com" steps.
+

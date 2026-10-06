@@ -2,6 +2,10 @@ import { useSyncExternalStore } from "react";
 import type { Agent } from "@/lib/api-client";
 
 /**
+ * Since Stage 10 the API stores each run's diff and PR context and returns
+ * them from `GET /analysis/{id}`, which the run page prefers. This store is
+ * now only a fallback for runs created before that. Original rationale:
+ *
  * The diff a run was triggered with is never persisted server-side —
  * `AnalysisRequest.diff` is a transient job argument (see its docstring),
  * not a column on `AnalysisRun` — so the PR analysis view has nowhere to

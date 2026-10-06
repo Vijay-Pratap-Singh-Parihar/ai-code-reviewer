@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -10,9 +10,18 @@ import { Separator } from "@/components/ui/separator";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 
+/** The top bar's section label, matching the sidebar item that's active. */
+export function sectionTitle(pathname: string): string {
+  if (pathname.startsWith("/repositories")) return "Repositories";
+  if (pathname.startsWith("/github")) return "GitHub";
+  if (pathname.startsWith("/runs/")) return "Review";
+  return "Dashboard";
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const router = useRouter();
+  const pathname = usePathname();
 
   async function handleLogout() {
     await logout();
@@ -28,7 +37,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="flex items-center gap-2">
               <SidebarTrigger />
               <Separator orientation="vertical" className="h-5" />
-              <span className="text-sm text-muted-foreground">Dashboard</span>
+              <span className="text-sm text-muted-foreground">{sectionTitle(pathname)}</span>
             </div>
             <div className="flex items-center gap-3">
               <ThemeToggle />

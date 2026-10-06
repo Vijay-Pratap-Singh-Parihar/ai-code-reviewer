@@ -15,8 +15,8 @@ const POLL_INTERVAL_MS = 1500;
 export default function RunPage() {
   const { runId } = useParams<{ runId: string }>();
 
-  // Client-only (sessionStorage isn't available during SSR) — see
-  // run-metadata-store's docstring for why this data lives here at all.
+  // Fallback only: runs created before Stage 10 have no diff/PR context on
+  // the server, just what the triggering tab kept in sessionStorage.
   const metadata = useRunMetadata(runId);
 
   const { data, isError } = useQuery({
@@ -38,6 +38,14 @@ export default function RunPage() {
 
   const status = data?.status ?? "queued";
   const statusBadge = STATUS_BADGE[status];
+  const context = {
+    prTitle: data?.pr_title ?? metadata?.prTitle,
+    repoFullName: data?.repo_full_name ?? metadata?.repoFullName,
+    baseBranch: data?.base_branch ?? metadata?.baseBranch,
+    prNumber: data?.pr_number ?? metadata?.prNumber,
+    agent: data?.agent ?? metadata?.agent,
+  };
+  const diff = data?.diff ?? metadata?.diff ?? null;
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 p-6">
@@ -47,16 +55,16 @@ export default function RunPage() {
         </Link>
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-lg font-semibold">
-            {metadata ? metadata.prTitle : `Run ${runId}`}
+            {context.prTitle ?? `Run ${runId}`}
           </h1>
           <Badge variant={statusBadge.variant} className={statusBadge.className}>
             {status}
           </Badge>
         </div>
-        {metadata && (
+        {context.repoFullName && (
           <p className="text-sm text-muted-foreground">
-            {metadata.repoFullName} &middot; {metadata.baseBranch} &middot; PR #{metadata.prNumber} &middot;{" "}
-            {metadata.agent}
+            {context.repoFullName} &middot; {context.baseBranch} &middot; PR #{context.prNumber} &middot;{" "}
+            {context.agent}
           </p>
         )}
         {data && (
@@ -73,13 +81,13 @@ export default function RunPage() {
 
       <div className="flex flex-col gap-2">
         <h2 className="text-sm font-semibold text-muted-foreground">Diff</h2>
-        {metadata ? (
-          <DiffViewer diffText={metadata.diff} findings={data?.findings ?? []} />
+        {diff ? (
+          <DiffViewer diffText={diff} findings={data?.findings ?? []} />
         ) : (
           <p className="text-sm text-muted-foreground">
-            The diff isn&apos;t available — it isn&apos;t stored on the server, only kept in this
-            browser tab for the session this run was triggered in (see the dashboard&apos;s trigger
-            form). Findings and their evidence trail still work below.
+            {status === "queued" || status === "running"
+              ? "The diff appears once the worker has fetched it from GitHub."
+              : "No diff is stored for this run (it predates server-side diff storage). Findings and their evidence trail still work below."}
           </p>
         )}
       </div>

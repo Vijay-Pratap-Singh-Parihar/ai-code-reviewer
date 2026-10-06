@@ -285,18 +285,21 @@ uv run pytest packages/engine/tests/verify/test_evidence_integration.py -v
 ## Frontend (Stage 9 — complete)
 
 `apps/web` (Next.js 16 App Router + TypeScript + Tailwind + shadcn/ui, per
-`Product_Architecture_FullStack.md` §6) has a working sign up / log in / log out flow against the
-real `/auth` endpoints, a dashboard that triggers real analysis runs against `POST /analysis` and
-`POST /repos/index`, and the PR analysis view the architecture doc calls "never cut" — a diff with
+`Product_Architecture_FullStack.md` §6) has:
+- A working sign up / log in / log out flow against the real `/auth` endpoints.
+- GitHub screens (Stage 10): connect accounts, browse repositories and their open PRs, review a PR
+  with one click, and toggle auto-review per repo.
+- A collapsed "Advanced" form that reviews a pasted diff.
+- The PR analysis view the architecture doc calls "never cut" — a diff with
 findings anchored inline at the lines they cite, plus each finding's full evidence trail. The access
 token lives in memory only (never `localStorage`), recovered on page reload via a silent call to
 `POST /auth/refresh`, which relies on the `HttpOnly` cookie the backend already sets — no new backend
 work needed for the auth piece.
 
 The app shell is a collapsible sidebar (`Ctrl`/`Cmd`+`B` to toggle, state persists across reloads) —
-**Dashboard** is the only wired-up section; every other planned section from the architecture doc's
-§6 (Repositories, Branch Memory, AI Providers, Usage & Budget, History) shows disabled with a "Soon"
-badge rather than being hidden, so the full planned IA is visible without any dead links. A dark/light
+**Dashboard**, **Repositories** and **GitHub** are wired up. The remaining planned sections from the
+architecture doc's §6 (Branch Memory, AI Providers, Usage & Budget, History) are shown disabled with a
+"Soon" badge rather than hidden, so the full planned IA is visible without any dead links. A dark/light
 toggle in the top bar (`next-themes`) applies everywhere.
 
 ```bash
@@ -304,21 +307,18 @@ cd apps/web
 cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL, for `npm run dev` outside Docker
 npm install
 npm run dev     # http://localhost:3000 — needs the API on :8000 (docker compose up -d api or `uv run uvicorn ...`)
-npm run test    # Vitest + React Testing Library, 56 tests
+npm run test    # Vitest + React Testing Library, 88 tests
 npm run test:e2e # Playwright, real browser — see "Manual and automated UI testing" below
 npm run build   # production build; also what `docker compose build web` runs
 ```
 
-The dashboard's "Trigger a review" form picks `agent: diff_only | cross_file` per the same
+The dashboard's **Advanced → "Trigger a review"** form picks `agent: diff_only | cross_file` per the same
 cost/depth choice `POST /analysis` exposes — **submitting it against a real backend makes a real,
 billed LLM call**, the same as `curl`-ing the endpoint directly, so don't trigger it against a
 real API key without meaning to. Click into any triggered run to see the PR analysis view
-(`/runs/[runId]`). As of Stage 10 the API stores each run's diff and returns it from
-`GET /analysis/{id}`. Until Stage 10 part 2 switches the page over, the frontend still renders the
-diff only for runs triggered in the current tab. Findings and their evidence trail always render.
-
-The GitHub onboarding screens (install the App, pick repositories, toggle auto-review, review a PR
-with one click) are Stage 10 part 2. The backend for them is in place (see "Connecting GitHub" below).
+(`/runs/[runId]`). The diff and PR details come from the API (stored with the run since Stage 10),
+so the page works in any tab or after a reload. Runs created before Stage 10 fall back to what the
+triggering tab kept in sessionStorage.
 
 ## Connecting GitHub (Stage 10)
 
@@ -329,8 +329,8 @@ the `GITHUB_*` variables blank, the app runs exactly as before and the manual "p
 still works.
 
 **Auto-review is off by default for every repository.** A review makes billed LLM calls, so reviewing
-on every PR open or push is opt-in per repo (`PATCH /repos/{id}` with `{"auto_review_enabled": true}`,
-or a toggle in the UI once Stage 10 part 2 ships). Even when it's on:
+on every PR open or push is opt-in per repo (the **Auto-review** switch on the Repositories screen, or
+`PATCH /repos/{id}` with `{"auto_review_enabled": true}`). Even when it's on:
 - Draft PRs are skipped.
 - A head commit that has already been reviewed is never reviewed twice.
 - Auto-review always uses the cheaper `diff_only` reviewer. `cross_file` is always an explicit
@@ -387,18 +387,23 @@ and manual redeliveries never queue a second review.
 
 ### 3. Install the App and link it to your revu organization
 
-`GET /github/app` returns the install link (`https://github.com/apps/<slug>/installations/new`).
-After you pick repositories, GitHub redirects to `http://localhost:3000/github/setup?code=...&installation_id=...`.
-That page passes both values to `POST /github/installations`. The server then:
+Open **GitHub** in the sidebar and click **Connect GitHub**. This goes to the App's install page,
+`https://github.com/apps/<slug>/installations/new`. After you pick repositories, GitHub redirects to
+`http://localhost:3000/github/setup?code=...&installation_id=...`, and that page passes both values to
+`POST /github/installations`. If your session had expired, you sign in first and return to the
+same URL: the `?next=` return path is same-origin only. The server then:
 1. Exchanges `code` for a user token.
 2. Checks that the installation appears in that user's `GET /user/installations`. The
    `installation_id` in the URL alone is never trusted.
 3. Syncs the installation's repositories.
 
-> Until Stage 10 part 2 ships the `/github/setup` page, copy the two query parameters from the
-> redirect URL and call the endpoint directly:
-> `curl -X POST localhost:8000/github/installations -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"installation_id": <id>, "code": "<code>"}'`
-> The code is single-use and expires after about 10 minutes.
+You land on **Repositories**:
+1. Every repo starts with **Auto-review off**.
+2. Open a repo to see its open PRs (live from GitHub), each with revu's latest run.
+3. Pick the review depth and click **Review**. Each review is one billed LLM call.
+4. **Build index** (free) enables `cross_file`.
+5. To add or remove repos, use **Manage on GitHub**. Then **Sync repos** on the GitHub screen, or
+   just wait for the `installation_repositories` webhook.
 
 ### Endpoints
 
@@ -442,6 +447,12 @@ Wait for all five containers to report healthy/running (`docker compose ps`), th
 8. Try logging in with the right email but a wrong password — the form shows
    *"invalid email or password"* inline and does not navigate away.
 
+9. In the sidebar, open **Repositories**. With no GitHub App configured, it says no repositories
+   are connected and offers **Connect GitHub**. The **GitHub** screen explains that the App isn't
+   configured yet. With an App configured, follow "Connecting GitHub" above.
+10. On the dashboard, expand **Advanced: review a pasted diff** to reach the manual forms. They make a
+    billed LLM call on submit.
+
 Everything above talks to the real API (no mocks) — the org/user you create is a real row in the
 dev Postgres database. Clean it up afterward if you like:
 
@@ -450,6 +461,12 @@ docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM org
 ```
 
 ### 3. Or run the same walkthrough as an automated Playwright test
+
+`apps/web/e2e/github.spec.ts` covers the Stage 10 screens on a stack without a GitHub App:
+- The empty Repositories and GitHub states.
+- The collapsed Advanced form.
+- A signed-out GitHub callback, which must come back to `/github/setup` after login.
+- An off-site `?next=`, which must be ignored.
 
 `apps/web/e2e/auth.spec.ts` drives a real Chromium browser through exactly the steps above (sign up,
 reload-survives-session, sign out, blocked-when-signed-out, log back in, wrong-password error) against
