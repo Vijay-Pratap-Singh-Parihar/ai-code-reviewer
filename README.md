@@ -356,7 +356,7 @@ cd apps/web
 cp .env.local.example .env.local   # NEXT_PUBLIC_API_BASE_URL, for `npm run dev` outside Docker
 npm install
 npm run dev     # http://localhost:3000 — needs the API on :8000 (docker compose up -d api or `uv run uvicorn ...`)
-npm run test    # Vitest + React Testing Library, 88 tests
+npm run test    # Vitest + React Testing Library, 104 tests
 npm run test:e2e # Playwright, real browser — see "Manual and automated UI testing" below
 npm run build   # production build; also what `docker compose build web` runs
 ```
@@ -517,6 +517,10 @@ docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DELETE FROM org
 - The collapsed Advanced form.
 - A signed-out GitHub callback, which must come back to `/github/setup` after login.
 - An off-site `?next=`, which must be ignored.
+
+`apps/web/e2e/lifecycle.spec.ts` covers the Audit log and grouped Repositories screens: an owner
+sees the Audit log, a failed and a successful sign-in land in it, the event filter narrows it, and
+Repositories groups by connection.
 
 `apps/web/e2e/auth.spec.ts` drives a real Chromium browser through exactly the steps above (sign up,
 reload-survives-session, sign out, blocked-when-signed-out, log back in, wrong-password error) against

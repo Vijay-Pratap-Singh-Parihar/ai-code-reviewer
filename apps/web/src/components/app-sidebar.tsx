@@ -10,7 +10,10 @@ import {
   Cpu,
   Wallet,
   History,
+  ScrollText,
 } from "lucide-react";
+import { useAuth } from "@/components/auth-provider";
+import { isOrgAdmin } from "@/lib/permissions";
 import {
   Sidebar,
   SidebarContent,
@@ -59,8 +62,19 @@ const PLANNED_ITEMS = [
   { title: "History", icon: History },
 ];
 
+// Organisation administration: owners and admins only (the API enforces it too).
+const ADMIN_ITEMS = [
+  {
+    title: "Audit log",
+    href: "/audit",
+    icon: ScrollText,
+    isActive: (path: string) => path.startsWith("/audit"),
+  },
+];
+
 export function AppSidebar() {
   const pathname = usePathname();
+  const { user } = useAuth();
 
   return (
     <Sidebar collapsible="icon">
@@ -92,6 +106,28 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {isOrgAdmin(user) && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Organization</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {ADMIN_ITEMS.map((item) => (
+                  <SidebarMenuItem key={item.href}>
+                    <SidebarMenuButton
+                      isActive={item.isActive(pathname)}
+                      tooltip={item.title}
+                      render={<Link href={item.href} />}
+                    >
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         <SidebarGroup>
           <SidebarGroupLabel>Planned</SidebarGroupLabel>

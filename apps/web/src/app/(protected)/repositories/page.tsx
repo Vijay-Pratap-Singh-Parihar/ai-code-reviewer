@@ -1,7 +1,6 @@
 "use client";
 
-import { RepositoryList } from "@/components/repository-list";
-import { Card, CardContent } from "@/components/ui/card";
+import { RepositoryGroups } from "@/components/repository-groups";
 
 export default function RepositoriesPage() {
   return (
@@ -9,15 +8,11 @@ export default function RepositoriesPage() {
       <div>
         <h1 className="text-lg font-semibold">Repositories</h1>
         <p className="text-sm text-muted-foreground">
-          Repositories from your connected GitHub accounts. Auto-review is off for every repository until
-          you turn it on.
+          Repositories from your connected GitHub accounts, grouped by account. Auto-review is off for every
+          repository until an owner or admin turns it on.
         </p>
       </div>
-      <Card>
-        <CardContent>
-          <RepositoryList />
-        </CardContent>
-      </Card>
+      <RepositoryGroups />
     </div>
   );
 }
