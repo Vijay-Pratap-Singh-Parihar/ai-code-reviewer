@@ -31,6 +31,7 @@ from api.schemas.github import (
 from api.services import github as github_service
 from api.services import lifecycle
 from api.services.branch_index import get_current_branch_index
+from api.services.providers import NO_REVIEW_MODEL
 from api.services.repositories import get_repository_for_org
 
 router = APIRouter(prefix="/repos", tags=["repositories"])
@@ -212,6 +213,8 @@ async def review_pull_request(
             )
         branch_index_id = view.ready.id
 
+    if not await github_service.has_review_route(db, user.org_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, NO_REVIEW_MODEL)
     run = await github_service.queue_github_review(
         db,
         redis,

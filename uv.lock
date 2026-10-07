@@ -492,12 +492,14 @@ name = "db"
 version = "0.1.0"
 source = { editable = "packages/db" }
 dependencies = [
+    { name = "cryptography" },
     { name = "revu" },
     { name = "sqlalchemy", extra = ["asyncio"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=43.0.3" },
     { name = "revu", editable = "packages/engine" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },
 ]

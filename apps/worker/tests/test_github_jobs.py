@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from worker import repo_cache
 from worker.jobs import analyze
 from worker.jobs.github import review_github_pr, sync_and_index_branch
+from worker.testing import review_provider
 
 FULL_NAME = "acme/widgets"
 TOKEN = "ghs_test_installation_token"
@@ -142,9 +143,10 @@ async def _make_github_run(
     )
     session.add(pr)
     await session.flush()
+    provider = await review_provider(session, repo.org_id)
     run = AnalysisRun(
         pr_id=pr.id,
-        config_snapshot={"agent": agent, "model": "fake-model", "head_sha": pr.head_sha},
+        config_snapshot={"agent": agent, "head_sha": pr.head_sha, **provider},
         status=AnalysisRunStatus.QUEUED,
     )
     session.add(run)

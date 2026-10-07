@@ -25,6 +25,7 @@ from worker import repo_cache
 from worker.github import installation_token, open_client, remote_url
 from worker.jobs.analyze import execute_review, mark_run_failed, mark_run_running
 from worker.jobs.index_branch import update_branch_index
+from worker.providers import provider_access_from_ctx
 from worker.storage import storage_from_ctx
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> Non
             await execute_review(
                 session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
                 agent=agent, repo_path=None, storage=storage,
+                provider_access=provider_access_from_ctx(ctx),
             )
             return
 
@@ -96,6 +98,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> Non
             await execute_review(
                 session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
                 agent=agent, repo_path=str(worktree), storage=storage,
+                provider_access=provider_access_from_ctx(ctx),
             )
         finally:
             await asyncio.to_thread(discard_worktree, checkout_from, worktree)

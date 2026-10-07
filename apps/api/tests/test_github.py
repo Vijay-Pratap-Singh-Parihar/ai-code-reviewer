@@ -19,6 +19,7 @@ from api.core.security import decode_access_token
 from api.db.session import get_db
 from api.main import app
 from api.services import github as github_service
+from api.testing import configure_review_model
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from db.organization import GithubInstallation, User, UserRole
@@ -278,6 +279,7 @@ async def test_link_adopts_a_repo_created_by_the_manual_flow(
     api_client: AsyncClient, fake_github: FakeGitHub
 ) -> None:
     headers = await _signup(api_client, "adopt@example.com")
+    await configure_review_model(api_client, headers)
     manual = await api_client.post(
         "/analysis",
         json={
@@ -348,6 +350,7 @@ async def test_pr_opened_reviews_once_when_auto_review_is_on(
     api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
 ) -> None:
     headers = await _signup(api_client, "on@example.com")
+    await configure_review_model(api_client, headers)
     await _link(api_client, headers)
     repo_id = await _repo_id(api_client, headers, "acme/widgets")
     patched = await api_client.patch(
@@ -512,10 +515,29 @@ async def test_push_to_default_branch_refreshes_only_indexed_branches(
 # --- connected repo endpoints -------------------------------------------------
 
 
+async def test_a_pr_review_needs_a_configured_review_model(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "nomodel-pr@example.com")
+    await _link(api_client, headers)
+    repo_id = await _repo_id(api_client, headers, "acme/widgets")
+    await api_client.patch(f"/repos/{repo_id}", json={"auto_review_enabled": True}, headers=headers)
+
+    manual = await api_client.post(
+        f"/repos/{repo_id}/pulls/7/analysis", json={"agent": "diff_only"}, headers=headers
+    )
+    automatic = await _send_webhook(api_client, "pull_request", _pr_event("opened"))
+
+    assert manual.status_code == 409
+    assert automatic.json()["detail"] == "no AI provider is configured for reviews"
+    assert _enqueued(api_client) == []
+
+
 async def test_list_pulls_merges_latest_run(
     api_client: AsyncClient, fake_github: FakeGitHub
 ) -> None:
     headers = await _signup(api_client, "pulls@example.com")
+    await configure_review_model(api_client, headers)
     await _link(api_client, headers)
     repo_id = await _repo_id(api_client, headers, "acme/widgets")
 
@@ -600,6 +622,7 @@ async def test_manual_repo_cannot_use_github_endpoints(
     api_client: AsyncClient, fake_github: FakeGitHub
 ) -> None:
     headers = await _signup(api_client, "manualonly@example.com")
+    await configure_review_model(api_client, headers)
     await api_client.post(
         "/analysis",
         json={

@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, ValidationError
 from revu.agents.tools import TOOL_SCHEMAS, ToolContext, call_tool
 from revu.context import RetrievalConfig, build_context_bundle
 from revu.models import ContextBundle, EvidenceItem, Finding, FindingCategory, RunResult, Severity
-from revu.providers.llm import complete
+from revu.providers.llm import ModelEndpoint, complete, extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class _CrossFileOutput(BaseModel):
 
 def _parse(content: str) -> _CrossFileOutput | None:
     try:
-        data = json.loads(content)
+        data = extract_json(content)
     except json.JSONDecodeError:
         return None
     try:
@@ -155,7 +155,7 @@ class _AgentState(TypedDict):
     latency_ms: int
 
 
-async def _agent_step(state: _AgentState, *, model: str) -> dict[str, Any]:
+async def _agent_step(state: _AgentState, *, model: str | ModelEndpoint) -> dict[str, Any]:
     result = await complete(model=model, messages=state["messages"], tools=TOOL_SCHEMAS)
 
     new_message: dict[str, Any] = {"role": "assistant", "content": result.content}
@@ -206,7 +206,7 @@ def _route_after_agent(state: _AgentState, *, max_rounds: int) -> str:
     return "done"
 
 
-def _build_graph(model: str, ctx: ToolContext, max_rounds: int) -> Any:
+def _build_graph(model: str | ModelEndpoint, ctx: ToolContext, max_rounds: int) -> Any:
     async def agent_node(state: _AgentState) -> dict[str, Any]:
         return await _agent_step(state, model=model)
 
@@ -232,7 +232,7 @@ async def review_cross_file(
     diff: str,
     repo_root: Path,
     graph: rx.PyDiGraph,
-    model: str,
+    model: str | ModelEndpoint,
     context_config: RetrievalConfig | None = None,
     max_rounds: int = MAX_TOOL_ROUNDS,
 ) -> RunResult:

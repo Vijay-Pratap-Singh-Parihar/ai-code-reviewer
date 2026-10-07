@@ -36,10 +36,15 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 30
 
-    # Model used by the Stage 3 diff-only reviewer. Snapshotted onto each
-    # AnalysisRun.config_snapshot at enqueue time, so a run always records
-    # exactly which model produced it regardless of later config changes.
-    revu_model_review: str = "claude-sonnet-5"
+    # Which model reviews use is configured per organisation on the AI
+    # Providers screen (`api.services.providers`), never here: there are no
+    # provider API keys in the environment.
+    #
+    # Whether AI provider endpoints may live on private/loopback networks
+    # (an Ollama on the host, a vLLM server inside the company network).
+    # Unset = allowed outside production, refused in production; on-prem
+    # deployments that serve their own model set it to true.
+    revu_allow_private_provider_urls: bool | None = None
 
     # GitHub App (Stage 10). All optional: with them unset the API still runs
     # and the manual diff-paste flow still works; `/github/*` reports the App
