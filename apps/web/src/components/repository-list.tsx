@@ -28,8 +28,11 @@ function RepositoryRow({ repo, compact }: { repo: RepositoryPublic; compact: boo
         <Badge variant="outline" className="font-mono text-xs">
           {repo.default_branch}
         </Badge>
-        {!repo.connected && <Badge variant="secondary">manual</Badge>}
-        {repo.connected && !repo.is_active && <Badge variant="secondary">access removed</Badge>}
+        {repo.github_repo_id === null && <Badge variant="secondary">manual</Badge>}
+        {/* Came from GitHub, but the App was uninstalled or lost access to it. */}
+        {repo.github_repo_id !== null && (!repo.connected || !repo.is_active) && (
+          <Badge variant="secondary">access removed</Badge>
+        )}
       </div>
       <div className="flex items-center gap-3">
         {linkable && <AutoReviewToggle repo={repo} />}
