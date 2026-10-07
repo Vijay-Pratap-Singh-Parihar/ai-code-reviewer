@@ -38,7 +38,7 @@ export default function DashboardPage() {
         <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
           <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
           Advanced: review a pasted diff
-          <span className="font-normal text-muted-foreground">— no GitHub connection needed</span>
+          <span className="font-normal text-muted-foreground">(no GitHub connection needed)</span>
         </summary>
         <div className="grid gap-4 p-4 pt-0 lg:grid-cols-2">
           <Card>
@@ -47,7 +47,7 @@ export default function DashboardPage() {
             </CardHeader>
             <CardContent>
               <p className="mb-3 text-sm text-muted-foreground">
-                Only needed before a <code className="font-mono">cross_file</code> review — skip this if
+                Only needed before a <code className="font-mono">cross_file</code> review. Skip this if
                 you&apos;re using the default, cheaper <code className="font-mono">diff_only</code> review.
               </p>
               <TriggerIndexForm />

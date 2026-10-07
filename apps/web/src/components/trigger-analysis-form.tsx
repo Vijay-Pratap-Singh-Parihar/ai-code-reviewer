@@ -132,8 +132,8 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="diff_only">diff_only — cheap, diff text only</SelectItem>
-            <SelectItem value="cross_file">cross_file — agentic, reads the repo (~4x cost)</SelectItem>
+            <SelectItem value="diff_only">diff_only: cheap, diff text only</SelectItem>
+            <SelectItem value="cross_file">cross_file: agentic, reads the repo (~4x cost)</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -149,7 +149,7 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
             placeholder="/tmp/acme-widgets"
           />
           <p className="text-xs text-muted-foreground">
-            Requires a ready branch index for this repo/branch — build one above first.
+            Requires a ready branch index for this repo/branch. Build one above first.
           </p>
         </div>
       )}

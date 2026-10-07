@@ -79,7 +79,7 @@ export function GitHubSetupHandler({
     );
   }
 
-  return <Message>{mutation.isSuccess ? "Connected — loading your repositories…" : "Connecting your GitHub account…"}</Message>;
+  return <Message>{mutation.isSuccess ? "Connected. Loading your repositories…" : "Connecting your GitHub account…"}</Message>;
 }
 
 function Message({ children, error = false }: { children: React.ReactNode; error?: boolean }) {

@@ -64,7 +64,7 @@ export function TriggerIndexForm() {
       )}
       {mutation.isSuccess && (
         <p className="text-sm text-muted-foreground">
-          Build triggered — status <code className="font-mono">{mutation.data.status}</code>.
+          Build triggered, status <code className="font-mono">{mutation.data.status}</code>.
           It can take a few seconds; retry the review below once it&apos;s ready.
         </p>
       )}

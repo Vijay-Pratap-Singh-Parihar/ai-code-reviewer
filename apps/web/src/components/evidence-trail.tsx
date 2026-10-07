@@ -37,7 +37,7 @@ export function EvidenceTrail({ findings }: { findings: FindingPublic[] }) {
               {finding.evidence.length > 0 && (
                 <div className="mt-1 flex flex-col gap-1.5 border-t pt-2">
                   <span className="text-xs font-medium text-muted-foreground">
-                    Evidence trail — files consulted and why:
+                    Evidence trail (files consulted and why):
                   </span>
                   <ul className="flex flex-col gap-1">
                     {finding.evidence.map((item, evidenceIndex) => (
@@ -45,7 +45,7 @@ export function EvidenceTrail({ findings }: { findings: FindingPublic[] }) {
                         <span className="font-mono text-muted-foreground">
                           {item.file_path}:{item.line_start}-{item.line_end}
                         </span>{" "}
-                        — {item.reason}
+                        · {item.reason}
                       </li>
                     ))}
                   </ul>

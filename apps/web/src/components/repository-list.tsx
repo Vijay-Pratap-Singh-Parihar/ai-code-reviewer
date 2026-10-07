@@ -67,7 +67,7 @@ export function RepositoryList({ limit, compact = false }: { limit?: number; com
       <div className="flex flex-col items-start gap-3">
         <p className="text-sm text-muted-foreground">
           No GitHub repositories connected yet. Connect a GitHub account to review pull requests with one
-          click — no diff pasting.
+          click, no diff pasting needed.
         </p>
         <Button render={<Link href="/github" />}>
           <Plug />
