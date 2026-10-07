@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 
 /**
- * Real-browser check of Stage 10's GitHub screens against a stack whose
- * GitHub App is NOT configured (the default dev setup): everything here is
- * free — no GitHub account, no LLM. The connected-repo flow itself (PR list,
+ * Real-browser check of Stage 10's GitHub screens. Works whether or not the
+ * stack already has a GitHub App (created via "Create GitHub App"): nothing
+ * here needs a signed-in GitHub account or an LLM. The connected-repo flow itself (PR list,
  * one-click review) is covered by unit tests with a faked API, plus the
  * manual real-GitHub check in VERIFICATION.md.
  *
@@ -60,7 +60,10 @@ test("sign up, then GitHub/Repositories screens and the collapsed manual form", 
 
   await page.getByRole("link", { name: "GitHub", exact: true }).click();
   await expect(page).toHaveURL(/\/github$/);
-  await expect(page.getByRole("button", { name: "Create GitHub App" })).toBeVisible();
+  // No App yet → one-click creation; App already set up → install link.
+  await expect(
+    page.getByRole("button", { name: "Create GitHub App" }).or(page.getByRole("link", { name: "Connect GitHub" })),
+  ).toBeVisible();
 });
 
 test("a signed-out GitHub callback returns to /github/setup after login", async ({ page }) => {
@@ -73,9 +76,10 @@ test("a signed-out GitHub callback returns to /github/setup after login", async 
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL(/\/github\/setup\?installation_id=42&code=e2e-code/);
-  // The handler really POSTed the values: with no App configured the API
-  // answers 503, and the page shows that reason instead of hanging.
-  await expect(page.getByText(/Couldn.t connect this installation: GitHub App is not configured/)).toBeVisible();
+  // The handler really POSTed the values and the API refused them (no App:
+  // 503; with an App, GitHub rejects the made-up OAuth code): the page shows
+  // the reason instead of hanging or pretending to succeed.
+  await expect(page.getByText(/Couldn.t connect this installation:/)).toBeVisible();
 });
 
 test("an off-site ?next= is ignored", async ({ page }) => {
