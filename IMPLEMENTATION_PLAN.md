@@ -1328,12 +1328,99 @@ Built on part 1's endpoints:
 `npm run lint`, `tsc --noEmit`, `npm run build` and `docker compose build web` pass. No backend
 changes, so the Python suite is unchanged at 327.
 
+## Stage 10 (follow-up) — one-click GitHub App creation
+
+When the user clicked **Connect GitHub** on a fresh deployment, they got "not configured". Fixing that
+by hand meant registering an App in GitHub's settings, copying four values plus a `.pem` into `.env`,
+and running a smee client in a terminal. The user had already said manual entry was a poor
+experience, and chose one-click setup over hand registration.
+
+Built, using GitHub's **App manifest flow**:
+
+- **`ghapp.manifest`** builds the App definition:
+  - Read-only `contents`/`pull_requests`/`metadata`.
+  - `pull_request` + `push` events.
+  - `redirect_url` → `/github/app-created`, `callback_urls` → `/github/setup`.
+  - `request_oauth_on_install: true`, which the Stage 10 installation-ownership check depends on.
+  - The webhook pointed at a fresh smee.io channel (or `GITHUB_WEBHOOK_PUBLIC_URL`).
+- **`POST /github/app/manifest`** returns the manifest and GitHub's creation URL (personal account
+  or an `organizations/<org>` owner). The URL carries a signed `state` JWT naming the user, the smee
+  channel and a nonce, valid for one hour.
+- **`POST /github/app/conversions`:**
+  - Verifies the `state` (signature, expiry, same user).
+  - Trades the one-time code at `POST /app-manifests/{code}/conversions`.
+  - Stores the App in a new singleton table `github_app_credentials` (migration `a0b68475a72c`, with
+    a `CHECK (id = 1)`).
+  - The private key, client secret and webhook secret are Fernet-encrypted (`ghapp.SecretBox`,
+    keyed from `CREDENTIAL_ENCRYPTION_KEY` via SHA-256; it refuses the placeholder key in
+    production).
+  - Owners/admins only. A second App returns 409; a concurrent double-complete is caught via the
+    primary key.
+- **One resolver, `api.core.github.resolve_app`:** complete `GITHUB_*` env vars win, else the stored
+  App. Everything uses it: `GET /github/app`, the GitHub client dependency, and the webhook secret
+  (an explicit env secret still wins on its own). The worker reads the stored App per job, so an
+  App created while it's running is picked up without a restart.
+- **`webhook-relay` service** (`python -m api.webhook_relay`, reusing the api image):
+  - Subscribes to the stored smee channel over SSE with an incremental parser.
+  - Replays each GitHub delivery to `/github/webhook` with its original headers. smee's own
+    `ready`/`ping` events are skipped.
+  - Reconnects with backoff, and idles until an App exists.
+  - The body is re-serialized like the official smee-client (`JSON.stringify`: compact, non-ASCII
+    kept) so GitHub's HMAC still verifies.
+- **Frontend:**
+  - The "not configured" card became **Set up GitHub**: an optional organization field plus
+    **Create GitHub App**, which does a real top-level form POST of the manifest to github.com.
+  - New `/github/app-created` page: completes once (single-use code, StrictMode-safe), then
+    **Install on your repositories**.
+  - Once set up, the GitHub screen names the App, where it came from, and whether webhooks go
+    through smee.
+
+**A pre-existing dev-database drift found and fixed along the way:**
+- I had added `analysis_runs.created_at` to the Stage 10 migration file after that migration was
+  already applied to the dev DB, so the dev DB never got the column.
+- Fresh databases and the test suite (which builds from the models) were unaffected. On the dev
+  stack, though, creating or reading any review run would have failed.
+- Autogenerate surfaced it. The column was added by hand exactly as the migration defines it.
+- Now verified two ways: the dev DB passes `alembic check`, and a brand-new database built by
+  running the full migration chain also passes `alembic check`.
+
+**A test bug found and fixed:**
+- `beforeEach(() => vi.mocked(fn).mockReset())` returns the mock. Vitest treats a function returned
+  from `beforeEach` as a teardown hook, so it *called the mock* after each test.
+- A test whose mock throws therefore failed for no real reason. A test written earlier in Stage 10
+  part 2 had the same pattern and only passed by luck. Both now use block bodies.
+
+**Tests** (25 new Python, 352 total; 5 new Vitest, 93 total):
+- Crypto: round trip, wrong key, real Fernet key, placeholder detection.
+- Manifest: read-only, URLs, unique names, org validation.
+- SSE parsing, and that a relayed body still verifies against GitHub's signature with Unicode.
+- Conversion and smee calls against `httpx.MockTransport`.
+- The full API flow:
+  - Credentials stored encrypted; the resolver decrypts them back.
+  - 409 on a second App.
+  - The stored webhook secret verifies deliveries and a wrong one gets 401.
+  - A state replayed by another user or tampered with gets 400 without GitHub ever being called.
+  - Members get 403.
+- The relay against a scripted SSE stream.
+- The worker loading the stored App.
+- The create button and the completion page.
+
+**Verified live, free:**
+- **Relay through real smee.io:** a local API and relay on a real smee.io channel. A correctly
+  signed delivery (with Unicode, floats and nested data) arrived and passed the HMAC check (200),
+  and a forged one was rejected (401).
+- **Browser hand-off on the rebuilt Docker stack:** clicking **Create GitHub App** POSTed the
+  manifest, with a fresh smee webhook, to `github.com/settings/apps/new` (GitHub showed its login
+  page to the signed-out test browser).
+- The Playwright suite: 6/6.
+- All test accounts, delivery rows and local processes were cleaned up.
+- No App credentials exist in the dev DB yet: creating the real App is the user's click.
+
 ## Next action
 
-1. **Live round trip against real github.com.** This is the user's step:
-   - Register the App (README → "Connecting GitHub").
-   - Start the smee.io relay.
-   - Connect a test repo and open a PR. It should not be reviewed, because auto-review is off.
+1. **Live round trip against real github.com (user's clicks):**
+   - GitHub → **Create GitHub App** → confirm on GitHub → **Install on your repositories**.
+   - Open a PR on a test repo. It should not be reviewed, because auto-review is off.
    - Click **Review** on it. This is one billed `diff_only` call, so ask before doing it.
 2. **Stage 11:**
    - AI Providers screen (multi-provider + fallback, per the CodeSense reference above).

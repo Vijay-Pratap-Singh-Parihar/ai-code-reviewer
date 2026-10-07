@@ -22,7 +22,7 @@ from revu.index.checkout import add_worktree, remove_worktree
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from worker import repo_cache
-from worker.github import client_factory, installation_token, remote_url
+from worker.github import installation_token, open_client, remote_url
 from worker.jobs.analyze import execute_review, mark_run_failed, mark_run_running
 from worker.jobs.index_branch import update_branch_index
 
@@ -47,7 +47,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str) -> None:
         agent = str(run.config_snapshot.get("agent", "diff_only"))
 
         try:
-            async with client_factory(ctx)() as gh:
+            async with await open_client(ctx, session) as gh:
                 token = await installation_token(session, gh, repo)
                 pull = await gh.get_pull(token, repo.full_name, pr.number)
                 diff = await gh.get_pull_diff(token, repo.full_name, pr.number)
@@ -140,7 +140,7 @@ async def sync_and_index_branch(
             return
 
         try:
-            async with client_factory(ctx)() as gh:
+            async with await open_client(ctx, session) as gh:
                 token = await installation_token(session, gh, repo)
             path = await repo_cache.fetch_refs(
                 cache_root=Path(ctx["repo_cache_dir"]),

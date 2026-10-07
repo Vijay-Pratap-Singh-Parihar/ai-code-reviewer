@@ -73,6 +73,22 @@ services:
       redis:
         condition: service_healthy
 
+  # Local development only: replays GitHub webhooks from the smee.io channel
+  # the in-app "Create GitHub App" flow sets up. Idles until that App exists.
+  webhook-relay:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    command: ["python", "-m", "api.webhook_relay"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://revu:revu_dev_password@postgres:5432/revu}
+      WEBHOOK_RELAY_TARGET: http://api:8000/github/webhook
+    depends_on:
+      - api
+
   web:
     build:
       context: ./apps/web

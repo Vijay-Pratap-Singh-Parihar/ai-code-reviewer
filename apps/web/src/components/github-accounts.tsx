@@ -12,6 +12,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CreateGitHubApp } from "@/components/create-github-app";
 
 function manageUrl(installation: InstallationPublic): string {
   return installation.account_type === "Organization"
@@ -80,22 +81,7 @@ export function GitHubAccounts() {
   }
 
   if (!app.data.configured) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>GitHub App not configured</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
-          <p>
-            This server has no GitHub App credentials yet, so repositories can&apos;t be connected. An
-            administrator needs to register a GitHub App and set the <code className="font-mono">GITHUB_*</code>{" "}
-            variables in <code className="font-mono">.env</code> — see the README section &ldquo;Connecting
-            GitHub&rdquo;.
-          </p>
-          <p>Until then, reviews can still be run by pasting a diff (Dashboard → Advanced).</p>
-        </CardContent>
-      </Card>
-    );
+    return <CreateGitHubApp error={app.data.error} />;
   }
 
   const rows = installations.data ?? [];
@@ -117,6 +103,16 @@ export function GitHubAccounts() {
               Connect GitHub
             </Button>
           </div>
+          {app.data.slug && (
+            <p className="text-xs text-muted-foreground">
+              Using the GitHub App{" "}
+              <a href={app.data.app_url ?? "#"} target="_blank" rel="noreferrer" className="underline underline-offset-4">
+                {app.data.slug}
+              </a>
+              {app.data.source === "env" ? " (configured by environment variables)" : ""}
+              {app.data.webhook_proxy_url ? " · webhooks relayed through smee.io" : ""}.
+            </p>
+          )}
           {!app.data.webhook_configured && (
             <p className="text-xs text-amber-700 dark:text-amber-400">
               No webhook secret is configured, so GitHub events (auto-review, index refresh on push) are

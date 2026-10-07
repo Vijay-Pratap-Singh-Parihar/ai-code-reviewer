@@ -23,12 +23,12 @@ describe("GitHubAccounts", () => {
     vi.mocked(listInstallations).mockReset().mockResolvedValue([]);
   });
 
-  it("explains how to configure the App when the server has no credentials", async () => {
+  it("offers one-click App creation when the server has no App yet", async () => {
     vi.mocked(getGitHubApp).mockResolvedValue({ configured: false, install_url: null, webhook_configured: false });
 
     renderAccounts();
 
-    expect(await screen.findByText("GitHub App not configured")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /create github app/i })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /connect github/i })).not.toBeInTheDocument();
   });
 

@@ -855,14 +855,15 @@ With `GITHUB_WEBHOOK_SECRET` set, a correctly signed `ping`:
 - Re-sending it with the same `X-GitHub-Delivery` returns `duplicate`.
 - A wrong signature returns 401.
 
-### Live, against real github.com (needs your own App: README → "Connecting GitHub")
+### Live, against real github.com (needs your GitHub account: README → "Connecting GitHub")
 
-1. Register the App, fill in `.env`, put the `.pem` in `./.secrets/`, then run
-   `docker compose up -d api worker` and the smee relay.
+1. Run `docker compose up -d`; the stack includes the `webhook-relay` service. In revu, open
+   **GitHub** → **Create GitHub App**, confirm on GitHub, then click **Install on your
+   repositories**. `docker compose logs webhook-relay` shows `relaying https://smee.io/...`.
 2. Install the App on a test repo. GitHub redirects to `/github/setup?code=...&installation_id=...`.
    That page links the installation and lands on **Repositories**, with the repo's Auto-review
    switch off.
-3. Open a PR on the repo. smee shows the delivery, and the API answers
+3. Open a PR on the repo. The relay log shows `forwarded pull_request ... -> 200`, and the API answers
    `"auto-review is disabled for this repository"`. No run is created, so nothing is spent.
 4. `GET /repos/{id}/pulls` lists the PR live from GitHub.
 5. **Billed step, only on purpose:**
@@ -892,4 +893,31 @@ By hand, without a GitHub App:
 4. `http://localhost:3000/login?next=//evil.example.com`: signing in lands on `/dashboard`.
 
 With a GitHub App, see the Stage 10 (part 1) "against real github.com" steps.
+
+## Stage 10 (follow-up) — one-click GitHub App creation
+
+```bash
+uv run pytest packages/ghapp apps/api/tests/test_github_app.py apps/api/tests/test_webhook_relay.py -q
+cd apps/web && npm run test        # → 93 passed
+```
+
+Migration drift check: build a brand-new database purely from migrations, then compare it with the
+models.
+
+```bash
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "CREATE DATABASE revu_migcheck;"
+cd apps/api
+DATABASE_URL_SYNC=postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_migcheck uv run alembic upgrade head
+DATABASE_URL_SYNC=postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_migcheck uv run alembic check
+# → No new upgrade operations detected.
+docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "DROP DATABASE revu_migcheck;"
+```
+
+Relay through real smee.io (free; no GitHub App needed):
+1. Create a channel with `curl -s -o /dev/null -w "%{redirect_url}" https://smee.io/new`.
+2. Run an API with `GITHUB_WEBHOOK_SECRET=x` on `:8001`.
+3. Run `GITHUB_WEBHOOK_PROXY_URL=<channel> WEBHOOK_RELAY_TARGET=http://localhost:8001/github/webhook
+   uv run --package api python -m api.webhook_relay`.
+4. POST a compact-JSON body, signed with `x` in `X-Hub-Signature-256`, to the channel. The relay logs
+   `forwarded ping ... -> 200`. The same post signed with any other secret logs `-> 401`.
 

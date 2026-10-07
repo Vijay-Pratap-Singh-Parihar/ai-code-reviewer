@@ -166,3 +166,40 @@ class GitHubClient:
             "/user/installations", self._token_headers(user_token), key="installations"
         )
         return {int(item["id"]) for item in installations}
+
+
+# --- calls made before any App exists (no credentials) -------------------------
+
+
+async def convert_manifest_code(
+    code: str,
+    *,
+    api_url: str = "https://api.github.com",
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict[str, Any]:
+    """Exchange the one-time code from the manifest flow's redirect for the
+    new App's full configuration, including `id`, `slug`, `client_id`,
+    `client_secret`, `webhook_secret` and `pem`. Valid once, for one hour."""
+    async with httpx.AsyncClient(
+        base_url=api_url,
+        transport=transport,
+        timeout=30.0,
+        headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": _API_VERSION},
+    ) as http:
+        response = await http.post(f"/app-manifests/{code}/conversions")
+    GitHubClient._raise_for_status(response)
+    result: dict[str, Any] = response.json()
+    return result
+
+
+async def create_smee_channel(
+    *, smee_url: str = "https://smee.io", transport: httpx.AsyncBaseTransport | None = None
+) -> str:
+    """Create a webhook relay channel; smee.io answers `/new` with a redirect
+    to the fresh channel URL."""
+    async with httpx.AsyncClient(transport=transport, timeout=15.0) as http:
+        response = await http.get(f"{smee_url.rstrip('/')}/new", follow_redirects=False)
+    location = str(response.headers.get("location", ""))
+    if not response.is_redirect or not location.startswith(smee_url.rstrip("/") + "/"):
+        raise GitHubError(response.status_code, "smee.io did not return a channel URL")
+    return location

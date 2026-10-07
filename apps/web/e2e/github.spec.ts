@@ -60,7 +60,7 @@ test("sign up, then GitHub/Repositories screens and the collapsed manual form", 
 
   await page.getByRole("link", { name: "GitHub", exact: true }).click();
   await expect(page).toHaveURL(/\/github$/);
-  await expect(page.getByText("GitHub App not configured")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create GitHub App" })).toBeVisible();
 });
 
 test("a signed-out GitHub callback returns to /github/setup after login", async ({ page }) => {

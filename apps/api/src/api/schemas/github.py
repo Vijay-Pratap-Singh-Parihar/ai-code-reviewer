@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from db.pull_request import AnalysisRunStatus
 from pydantic import BaseModel, Field
@@ -10,6 +10,34 @@ class GitHubAppInfo(BaseModel):
     configured: bool
     install_url: str | None
     webhook_configured: bool
+    source: Literal["env", "database"] | None = None
+    slug: str | None = None
+    app_url: str | None = None
+    # The smee.io channel webhooks arrive through in local development.
+    webhook_proxy_url: str | None = None
+    # Set when credentials exist but can't be used (e.g. undecryptable).
+    error: str | None = None
+
+
+class ManifestStartRequest(BaseModel):
+    organization: str | None = Field(
+        default=None,
+        max_length=39,
+        description="GitHub organization to own the App; defaults to your personal account.",
+    )
+
+
+class ManifestStartResponse(BaseModel):
+    """POST `manifest` (JSON-encoded, as a form field named `manifest`) to
+    `action_url` from the browser; GitHub takes it from there."""
+
+    action_url: str
+    manifest: dict[str, Any]
+
+
+class ManifestCompleteRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=256)
+    state: str = Field(min_length=1, max_length=4096)
 
 
 class InstallationLinkRequest(BaseModel):

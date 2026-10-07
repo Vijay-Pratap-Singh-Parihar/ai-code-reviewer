@@ -317,3 +317,33 @@ def test_git_errors_never_echo_the_token(tmp_path: Path) -> None:
         )
     assert "ghs_secret" not in str(excinfo.value)
     assert "ghs_secret" not in (dest / ".git" / "config").read_text()
+
+
+async def test_open_client_uses_credentials_stored_by_the_manifest_flow(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, Any], app_config: GitHubAppConfig
+) -> None:
+    from db.github import GitHubAppCredentials
+    from ghapp import SecretBox
+    from worker.github import open_client
+
+    box = SecretBox("worker-test-key")
+    worker_db_session.add(
+        GitHubAppCredentials(
+            id=1,
+            app_id=777,
+            slug="revu-test",
+            name="revu-test",
+            owner_login="vijay",
+            html_url="https://github.com/apps/revu-test",
+            client_id="Iv23li",
+            client_secret_enc=box.encrypt("cs"),
+            webhook_secret_enc=box.encrypt("ws"),
+            private_key_enc=box.encrypt(app_config.private_key_pem),
+        )
+    )
+    await worker_db_session.flush()
+    worker_ctx.update(github_client_factory=None, credential_encryption_key="worker-test-key")
+
+    async with await open_client(worker_ctx, worker_db_session) as gh:
+        assert gh._config.app_id == "777"
+        assert gh._config.private_key_pem == app_config.private_key_pem

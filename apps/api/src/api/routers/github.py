@@ -3,24 +3,34 @@ import logging
 import uuid
 from typing import Annotated, Any
 
-from db.organization import GithubInstallation
+from db.organization import GithubInstallation, UserRole
 from db.repository import Repository
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from ghapp import GitHubError, verify_signature
+from ghapp import (
+    CredentialDecryptionError,
+    GitHubAppNotConfiguredError,
+    GitHubError,
+    verify_signature,
+)
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
 from api.core.deps import CurrentUser, RedisPool
-from api.core.github import GitHub
+from api.core.github import GitHub, ResolvedApp, resolve_app
 from api.db.session import get_db
 from api.schemas.github import (
     GitHubAppInfo,
     InstallationLinkRequest,
     InstallationPublic,
+    ManifestCompleteRequest,
+    ManifestStartRequest,
+    ManifestStartResponse,
     WebhookResponse,
 )
 from api.services import github as github_service
+from api.services import github_app as github_app_service
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +59,78 @@ def _bad_gateway(exc: GitHubError) -> HTTPException:
     return HTTPException(status.HTTP_502_BAD_GATEWAY, f"GitHub request failed: {exc}")
 
 
-@router.get("/app", response_model=GitHubAppInfo)
-async def get_app_info(_: CurrentUser) -> GitHubAppInfo:
-    settings = get_settings()
-    install_url = (
-        f"{settings.github_web_url}/apps/{settings.github_app_slug}/installations/new"
-        if settings.github_app_configured
-        else None
-    )
+def _app_info(app: ResolvedApp | None, *, error: str | None = None) -> GitHubAppInfo:
+    if app is None:
+        return GitHubAppInfo(
+            configured=False, install_url=None, webhook_configured=False, error=error
+        )
+    web = get_settings().github_web_url
     return GitHubAppInfo(
-        configured=settings.github_app_configured,
-        install_url=install_url,
-        webhook_configured=bool(settings.github_webhook_secret),
+        configured=True,
+        install_url=f"{web}/apps/{app.slug}/installations/new",
+        webhook_configured=bool(app.webhook_secret),
+        source=app.source,
+        slug=app.slug,
+        app_url=app.html_url or f"{web}/apps/{app.slug}",
+        webhook_proxy_url=app.webhook_proxy_url,
     )
+
+
+def _require_admin(user: CurrentUser) -> None:
+    if user.role not in (UserRole.OWNER, UserRole.ADMIN):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "only an organization owner or admin can do this"
+        )
+
+
+@router.get("/app", response_model=GitHubAppInfo)
+async def get_app_info(_: CurrentUser, db: Db) -> GitHubAppInfo:
+    try:
+        return _app_info(await resolve_app(db))
+    except (GitHubAppNotConfiguredError, CredentialDecryptionError, OSError) as exc:
+        return _app_info(None, error=str(exc))
+
+
+@router.post("/app/manifest", response_model=ManifestStartResponse)
+async def start_app_manifest(
+    body: ManifestStartRequest, user: CurrentUser, db: Db
+) -> ManifestStartResponse:
+    """Step 1 of one-click App creation: what the browser should POST to GitHub."""
+    _require_admin(user)
+    try:
+        start = await github_app_service.start_manifest(
+            db, user=user, organization=body.organization or None
+        )
+    except github_app_service.AppAlreadyConfiguredError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "a GitHub App is already set up") from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except GitHubError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"could not create a webhook relay channel: {exc}"
+        ) from exc
+    return ManifestStartResponse(action_url=start.action_url, manifest=start.manifest)
+
+
+@router.post("/app/conversions", response_model=GitHubAppInfo, status_code=status.HTTP_201_CREATED)
+async def complete_app_manifest(
+    body: ManifestCompleteRequest, user: CurrentUser, db: Db
+) -> GitHubAppInfo:
+    """Step 2: GitHub redirected back with a one-time code; trade it for the
+    new App's credentials and store them encrypted."""
+    _require_admin(user)
+    try:
+        await github_app_service.complete_manifest(db, user=user, code=body.code, state=body.state)
+    except github_app_service.InvalidManifestStateError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except (github_app_service.AppAlreadyConfiguredError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, "a GitHub App is already set up") from exc
+    except GitHubAppNotConfiguredError as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    except GitHubError as exc:
+        raise _bad_gateway(exc) from exc
+    return _app_info(await resolve_app(db))
 
 
 @router.get("/installations", response_model=list[InstallationPublic])
@@ -127,7 +196,15 @@ async def receive_webhook(
 ) -> WebhookResponse:
     """Unauthenticated by design (GitHub calls it), so the HMAC signature is
     the only gate, and it is checked against the raw bytes before parsing."""
+    # An explicit env secret wins; otherwise the one GitHub generated for an
+    # App created through the manifest flow.
     secret = get_settings().github_webhook_secret
+    if not secret:
+        try:
+            app = await resolve_app(db)
+        except (GitHubAppNotConfiguredError, CredentialDecryptionError, OSError):
+            app = None
+        secret = app.webhook_secret if app else ""
     if not secret:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "webhook secret not configured")
 

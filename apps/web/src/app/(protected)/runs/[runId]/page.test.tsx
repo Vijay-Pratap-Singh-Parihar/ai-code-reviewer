@@ -32,7 +32,9 @@ function renderPage() {
 }
 
 describe("RunPage", () => {
-  beforeEach(() => vi.mocked(getAnalysisRun).mockReset());
+  beforeEach(() => {
+    vi.mocked(getAnalysisRun).mockReset();
+  });
 
   it("renders PR context and the diff stored on the server", async () => {
     vi.mocked(getAnalysisRun).mockResolvedValue({
