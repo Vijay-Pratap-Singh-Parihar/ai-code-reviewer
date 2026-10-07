@@ -49,6 +49,9 @@ class InstallationLinkRequest(BaseModel):
     code: str = Field(min_length=1, max_length=256)
 
 
+ConnectionStatus = Literal["active", "suspended", "uninstalled"]
+
+
 class InstallationPublic(BaseModel):
     id: uuid.UUID
     installation_id: int
@@ -56,6 +59,13 @@ class InstallationPublic(BaseModel):
     account_type: str
     installed_at: datetime
     repository_count: int = 0
+    status: ConnectionStatus = "active"
+    suspended_at: datetime | None = None
+    uninstalled_at: datetime | None = None
+    # Repositories under this installation that are disconnected and waiting
+    # for the retention job, and when the earliest of them is purged.
+    disconnected_repository_count: int = 0
+    purge_after: datetime | None = None
 
 
 class RepositoryPublic(BaseModel):
@@ -66,6 +76,10 @@ class RepositoryPublic(BaseModel):
     connected: bool
     auto_review_enabled: bool
     github_repo_id: int | None
+    installation_id: uuid.UUID | None = None
+    disconnected_at: datetime | None = None
+    # When the retention job deletes this repository's data, if disconnected.
+    purge_after: datetime | None = None
 
 
 class RepositoryUpdate(BaseModel):

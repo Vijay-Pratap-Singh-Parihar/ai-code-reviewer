@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, String
+from sqlalchemy import BigInteger, ForeignKey, String, false
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,6 +47,12 @@ class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     role: Mapped[UserRole] = mapped_column(
         pg_enum(UserRole), default=UserRole.MEMBER, nullable=False
     )
+    # Deployment-wide operator (not an organisation role): may create or
+    # replace the GitHub App every organisation installs. Bootstrapped from
+    # REVU_PLATFORM_ADMIN_EMAILS or `python -m api.cli platform-admin`.
+    is_platform_admin: Mapped[bool] = mapped_column(
+        default=False, server_default=false(), nullable=False
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="users")
 
@@ -65,3 +71,9 @@ class GithubInstallation(UUIDPrimaryKeyMixin, Base):
     )
     permissions: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
     installed_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+    # Lifecycle. Suspended: GitHub paused access; repositories go inactive
+    # but keep their data. Uninstalled: the App was removed; the row stays so
+    # its repositories (and their data) remain visible, grouped under it,
+    # until the retention job purges them (or an admin deletes them sooner).
+    suspended_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    uninstalled_at: Mapped[datetime | None] = mapped_column(TZDateTime)

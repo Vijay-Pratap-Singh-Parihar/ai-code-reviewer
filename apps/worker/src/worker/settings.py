@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from arq.connections import RedisSettings
+from arq.cron import cron
 from db.tenancy import rls_bypass_reason
 from ghapp import GitHubAppConfig, load_private_key
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -13,6 +14,11 @@ from worker.jobs.analyze import analyze_pr
 from worker.jobs.db_ping import db_ping
 from worker.jobs.github import review_github_pr, sync_and_index_branch
 from worker.jobs.ping import ping
+from worker.jobs.retention import (
+    purge_expired_data,
+    purge_installation_data,
+    purge_repository_data,
+)
 from worker.storage import TenantStorage, signing_key_from_secret
 
 # apps/worker/src/worker/settings.py -> repo root is four levels up.
@@ -46,6 +52,9 @@ class Settings(BaseSettings):
     revu_repo_cache_dir: str = ".revu/repos"
     # Signed branch-index blobs (graph + full index result).
     revu_index_storage_dir: str = ".revu/index-graphs"
+    # How long a disconnected repository's data is kept before
+    # `purge_expired_data` deletes it. Must match the API's setting.
+    revu_disconnected_retention_days: int = 30
 
     def github_app_config(self) -> GitHubAppConfig | None:
         if not self.github_app_id or not (
@@ -74,7 +83,11 @@ class WorkerSettings:
         analyze_pr,
         review_github_pr,
         sync_and_index_branch,
+        purge_repository_data,
+        purge_installation_data,
     ]
+    # Hourly, off the hour so it doesn't coincide with other cron work.
+    cron_jobs = [cron(purge_expired_data, minute={17}, unique=True)]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
 
     @staticmethod
@@ -95,6 +108,7 @@ class WorkerSettings:
         ctx["credential_encryption_key"] = settings.credential_encryption_key
         ctx["github_api_url"] = settings.github_api_url
         ctx["git_base_url"] = settings.github_web_url
+        ctx["retention_days"] = settings.revu_disconnected_retention_days
         ctx["storage"] = TenantStorage(
             repo_cache_root=Path(settings.revu_repo_cache_dir).resolve(),
             index_root=Path(settings.revu_index_storage_dir).resolve(),

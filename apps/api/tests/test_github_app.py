@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from api.core.config import get_settings
 from api.core.github import resolve_app
 from api.db.session import get_db
 from api.main import app
@@ -49,6 +50,23 @@ CREATED = {
     "webhook_secret": "webhook-secret-value",
     "pem": PEM,
 }
+
+
+PLATFORM_ADMINS = (
+    "start@example.com",
+    "org@example.com",
+    "full@example.com",
+    "hook@example.com",
+    "starter@example.com",
+    "other@example.com",
+)
+
+
+@pytest.fixture(autouse=True)
+def platform_admins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating the App is a platform-admin action; these test users are
+    granted it the way an operator would, through REVU_PLATFORM_ADMIN_EMAILS."""
+    monkeypatch.setattr(get_settings(), "revu_platform_admin_emails", ",".join(PLATFORM_ADMINS))
 
 
 @pytest.fixture
@@ -228,3 +246,31 @@ async def test_members_cannot_create_the_app(
 
     assert response.status_code == 403
     assert fake_github_app["smee"] == 0
+
+
+async def test_an_org_owner_who_is_not_a_platform_admin_cannot_create_the_app(
+    api_client: AsyncClient, fake_github_app: dict[str, Any]
+) -> None:
+    """Every signup owns its own organisation, so "owner" can't be the bar
+    for creating the App every organisation installs."""
+    headers = await _signup(api_client, "just-an-owner@example.com")
+    me = (await api_client.get("/auth/me", headers=headers)).json()
+
+    response = await api_client.post("/github/app/manifest", json={}, headers=headers)
+
+    assert me["role"] == "owner" and me["is_platform_admin"] is False
+    assert response.status_code == 403
+    assert fake_github_app["smee"] == 0
+
+
+async def test_platform_admin_granted_from_config_is_visible_and_audited(
+    api_client: AsyncClient,
+) -> None:
+    headers = await _signup(api_client, "full@example.com")
+
+    me = (await api_client.get("/auth/me", headers=headers)).json()
+    audit = (await api_client.get("/audit", headers=headers)).json()["entries"]
+
+    assert me["is_platform_admin"] is True
+    assert [e["action"] for e in audit] == ["platform_admin.granted"]
+    assert audit[0]["metadata"] == {"source": "REVU_PLATFORM_ADMIN_EMAILS"}

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, Integer, Numeric, String, func
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,7 +36,10 @@ class TokenUsageLedger(UUIDPrimaryKeyMixin, Base):
 
 
 class AuditLog(UUIDPrimaryKeyMixin, Base):
+    """See `db.audit` for what is recorded and how."""
+
     __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_log_org_at", "org_id", "at"),)
 
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False

@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
+from db.audit import AuditAction, record_audit
 from db.github import GitHubAppCredentials
 from db.organization import User
 from ghapp import convert_manifest_code, create_smee_channel
@@ -127,5 +128,13 @@ async def complete_manifest(
         created_by_user_id=uuid.UUID(str(user.id)),
     )
     session.add(row)
+    record_audit(
+        session,
+        org_id=user.org_id,
+        actor_id=user.id,
+        action=AuditAction.GITHUB_APP_CREATED,
+        target=f"github_app:{row.slug}",
+        metadata={"app_id": row.app_id, "owner": row.owner_login},
+    )
     await session.commit()
     return row

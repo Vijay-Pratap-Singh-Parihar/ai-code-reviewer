@@ -10,6 +10,20 @@ Two trust rules run through this module:
   URL is attacker-controllable and is never trusted on its own.
 * Webhook payloads are trusted only after `ghapp.verify_signature` passes
   (enforced in the router), and only act on installations already linked.
+
+Connection lifecycle:
+
+* A repository belongs to exactly one installation at a time. If a second
+  installation in the same organisation can also see it, the first keeps it
+  until that one is uninstalled or the repository is removed from it.
+* Suspension pauses repositories (inactive, data kept, no retention clock).
+* Removal from an installation, or uninstalling the App, *disconnects* the
+  repository: it goes inactive and `disconnected_at` starts the retention
+  period, after which the worker's retention job purges its data. The
+  installation row is kept (`uninstalled_at`) so disconnected repositories
+  stay grouped under it. Connecting the repository again before the purge,
+  through any installation of the same organisation, restores it.
+* Every one of these transitions is written to the audit log.
 """
 
 from __future__ import annotations
@@ -21,6 +35,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from arq import ArqRedis
+from db.audit import AuditAction, record_audit
 from db.branch_index import BranchIndex, BranchIndexStatus
 from db.github import WebhookDelivery
 from db.organization import GithubInstallation
@@ -52,7 +67,13 @@ class InstallationOwnedByAnotherOrgError(Exception):
 
 
 async def link_installation(
-    session: AsyncSession, gh: GitHubClient, *, org_id: uuid.UUID, installation_id: int, code: str
+    session: AsyncSession,
+    gh: GitHubClient,
+    *,
+    org_id: uuid.UUID,
+    installation_id: int,
+    code: str,
+    actor_id: uuid.UUID | None = None,
 ) -> GithubInstallation:
     user_token = await gh.exchange_oauth_code(code)
     if installation_id not in await gh.list_user_installation_ids(user_token):
@@ -82,8 +103,18 @@ async def link_installation(
     installation.account_login = str(account.get("login", "unknown"))
     installation.account_type = str(account.get("type", "User"))
     installation.permissions = dict(details.get("permissions") or {})
+    installation.uninstalled_at = None
+    installation.suspended_at = None
     await session.flush()
 
+    record_audit(
+        session,
+        org_id=org_id,
+        actor_id=actor_id,
+        action=AuditAction.INSTALLATION_LINKED,
+        target=f"installation:{installation.account_login}",
+        metadata={"installation_id": installation_id},
+    )
     await resync_installation(session, gh, installation)
     await session.commit()
     await session.refresh(installation)
@@ -94,22 +125,45 @@ async def resync_installation(
     session: AsyncSession, gh: GitHubClient, installation: GithubInstallation
 ) -> list[Repository]:
     """Full sync against GitHub: upsert every repo the installation can see
-    and deactivate any previously linked repo it no longer can."""
+    and disconnect any previously linked repo it no longer can."""
     token = await gh.create_installation_token(installation.installation_id)
     payloads = await gh.list_installation_repositories(token)
     repos = await upsert_repositories(session, installation, payloads)
 
     seen = {r.id for r in repos}
-    stale = await session.scalars(
+    linked = await session.scalars(
         select(Repository).where(
-            Repository.installation_id == installation.id, Repository.is_active.is_(True)
+            Repository.installation_id == installation.id,
+            Repository.disconnected_at.is_(None),
         )
     )
-    for repo in stale:
-        if repo.id not in seen:
-            repo.is_active = False
+    disconnect_repositories(
+        session, installation, [repo for repo in linked if repo.id not in seen], reason="sync"
+    )
     await session.flush()
     return repos
+
+
+def disconnect_repositories(
+    session: AsyncSession,
+    installation: GithubInstallation,
+    repos: list[Repository],
+    *,
+    reason: str,
+) -> None:
+    """Take repositories offline and start their retention period."""
+    now = datetime.now(UTC)
+    for repo in repos:
+        repo.is_active = False
+        if repo.disconnected_at is None:
+            repo.disconnected_at = now
+            record_audit(
+                session,
+                org_id=repo.org_id,
+                action=AuditAction.REPOSITORY_DISCONNECTED,
+                target=f"repository:{repo.full_name}",
+                metadata={"reason": reason, "installation": installation.account_login},
+            )
 
 
 async def upsert_repositories(
@@ -119,6 +173,10 @@ async def upsert_repositories(
     stable numeric ID first, then by name (adopting a row the manual
     diff-paste flow created earlier). Another organisation connecting the
     same GitHub repository gets its own, separate row.
+
+    A repository already linked to a different, still-installed installation
+    of this organisation stays with it (see the module docstring) and is
+    not returned. Connecting a disconnected repository restores it.
     """
     org_id = installation.org_id
     synced: list[Repository] = []
@@ -136,18 +194,48 @@ async def upsert_repositories(
                     Repository.org_id == org_id, Repository.full_name == full_name
                 )
             )
+        if repo is not None and await _pinned_elsewhere(session, repo, installation):
+            logger.info(
+                "repo %s stays with its current installation; not moving it to %s",
+                full_name,
+                installation.account_login,
+            )
+            continue
+        newly_connected = repo is None or repo.disconnected_at is not None or not (
+            repo.installation_id == installation.id and repo.is_active
+        )
         if repo is None:
             repo = Repository(org_id=installation.org_id, full_name=full_name)
             session.add(repo)
         repo.github_repo_id = github_id
         repo.full_name = full_name
         repo.installation_id = installation.id
-        repo.is_active = True
+        repo.is_active = installation.suspended_at is None
+        repo.disconnected_at = None
         if payload.get("default_branch"):
             repo.default_branch = str(payload["default_branch"])
+        if newly_connected:
+            record_audit(
+                session,
+                org_id=org_id,
+                action=AuditAction.REPOSITORY_CONNECTED,
+                target=f"repository:{full_name}",
+                metadata={"installation": installation.account_login},
+            )
         synced.append(repo)
     await session.flush()
     return synced
+
+
+async def _pinned_elsewhere(
+    session: AsyncSession, repo: Repository, installation: GithubInstallation
+) -> bool:
+    if repo.installation_id is None or repo.installation_id == installation.id:
+        return False
+    if repo.disconnected_at is not None:
+        return False
+    current = await session.get(GithubInstallation, repo.installation_id)
+    return current is not None and current.uninstalled_at is None
 
 
 # --- webhooks ---------------------------------------------------------------
@@ -263,6 +351,8 @@ async def queue_github_review(
     agent: str,
     trigger: str,
     branch_index_id: uuid.UUID | None = None,
+    actor_id: uuid.UUID | None = None,
+    repo_full_name: str = "",
 ) -> AnalysisRun:
     run = AnalysisRun(
         pr_id=pr.id,
@@ -281,6 +371,15 @@ async def queue_github_review(
         created_at=datetime.now(UTC),
     )
     session.add(run)
+    await session.flush()
+    record_audit(
+        session,
+        org_id=run.org_id,
+        actor_id=actor_id,
+        action=AuditAction.REVIEW_REQUESTED,
+        target=f"pull_request:{repo_full_name}#{pr.number}",
+        metadata={"run_id": str(run.id), "agent": agent, "trigger": trigger},
+    )
     await session.commit()
     await redis.enqueue_job("review_github_pr", str(run.id), str(run.org_id))
     return run
@@ -326,7 +425,9 @@ async def _handle_pull_request(
 
     # Auto-review always uses the cheaper diff-only reviewer; the deeper
     # cross-file review is an explicit, per-PR choice in the UI.
-    run = await queue_github_review(session, redis, pr=pr, agent="diff_only", trigger="webhook")
+    run = await queue_github_review(
+        session, redis, pr=pr, agent="diff_only", trigger="webhook", repo_full_name=repo.full_name
+    )
     return WebhookOutcome("processed", "auto-review queued", enqueued=[str(run.id)])
 
 
@@ -338,6 +439,8 @@ async def queue_github_index(
     branch_name: str,
     target_sha: str | None,
     force_full: bool,
+    actor_id: uuid.UUID | None = None,
+    trigger: str = "manual",
 ) -> BranchIndex:
     row = BranchIndex(
         repo_id=repo.id,
@@ -348,6 +451,15 @@ async def queue_github_index(
         created_at=datetime.now(UTC),
     )
     session.add(row)
+    await session.flush()
+    record_audit(
+        session,
+        org_id=row.org_id,
+        actor_id=actor_id,
+        action=AuditAction.INDEX_REQUESTED,
+        target=f"repository:{repo.full_name}@{branch_name}",
+        metadata={"branch_index_id": str(row.id), "trigger": trigger, "force_full": force_full},
+    )
     await session.commit()
     await redis.enqueue_job(
         "sync_and_index_branch", str(row.id), str(row.org_id), target_sha, force_full
@@ -386,6 +498,7 @@ async def _handle_push(
         branch_name=repo.default_branch,
         target_sha=str(payload["after"]),
         force_full=False,
+        trigger="push",
     )
     return WebhookOutcome("processed", "index refresh queued", enqueued=[str(row.id)])
 
@@ -393,19 +506,43 @@ async def _handle_push(
 async def _handle_installation(
     session: AsyncSession, installation: GithubInstallation, action: str | None
 ) -> WebhookOutcome:
-    if action in ("deleted", "suspend"):
+    now = datetime.now(UTC)
+    audit_action: AuditAction | None = None
+    if action == "deleted":
+        installation.uninstalled_at = now
+        repos = await session.scalars(
+            select(Repository).where(Repository.installation_id == installation.id)
+        )
+        disconnect_repositories(session, installation, list(repos), reason="uninstalled")
+        audit_action = AuditAction.INSTALLATION_UNINSTALLED
+    elif action == "suspend":
+        installation.suspended_at = now
         await session.execute(
             update(Repository)
             .where(Repository.installation_id == installation.id)
             .values(is_active=False)
         )
-        if action == "deleted":
-            await session.delete(installation)
+        audit_action = AuditAction.INSTALLATION_SUSPENDED
     elif action == "unsuspend":
+        installation.suspended_at = None
+        # Only repositories still connected come back; ones removed from the
+        # installation while it was suspended stay disconnected.
         await session.execute(
             update(Repository)
-            .where(Repository.installation_id == installation.id)
+            .where(
+                Repository.installation_id == installation.id,
+                Repository.disconnected_at.is_(None),
+            )
             .values(is_active=True)
+        )
+        audit_action = AuditAction.INSTALLATION_UNSUSPENDED
+    if audit_action is not None:
+        record_audit(
+            session,
+            org_id=installation.org_id,
+            action=audit_action,
+            target=f"installation:{installation.account_login}",
+            metadata={"installation_id": installation.installation_id},
         )
     await session.commit()
     return WebhookOutcome("processed", f"installation {action}")
@@ -419,14 +556,13 @@ async def _handle_installation_repositories(
     await upsert_repositories(session, installation, payload.get("repositories_added") or [])
     removed_ids = [int(r["id"]) for r in payload.get("repositories_removed") or []]
     if removed_ids:
-        await session.execute(
-            update(Repository)
-            .where(
+        removed = await session.scalars(
+            select(Repository).where(
                 Repository.installation_id == installation.id,
                 Repository.github_repo_id.in_(removed_ids),
             )
-            .values(is_active=False)
         )
+        disconnect_repositories(session, installation, list(removed), reason="removed")
     await session.commit()
     return WebhookOutcome("processed", "repositories synced")
 

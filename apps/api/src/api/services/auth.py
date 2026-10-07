@@ -2,8 +2,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from db.audit import AuditAction, record_audit
 from db.auth import RefreshToken
 from db.organization import Organization, User, UserRole
+from db.tenancy import bind_org
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,6 +65,24 @@ async def _issue_token_pair(session: AsyncSession, user: User) -> tuple[TokenPai
     return TokenPair(access_token, raw_refresh, expires_at), refresh_row
 
 
+async def _sync_platform_admin(session: AsyncSession, user: User) -> None:
+    """Grant platform admin to emails listed in REVU_PLATFORM_ADMIN_EMAILS.
+    One-way on purpose: removing an email from the list does not silently
+    demote anyone; revoking is an explicit, audited CLI action."""
+    if user.is_platform_admin or user.email.lower() not in get_settings().platform_admin_emails:
+        return
+    user.is_platform_admin = True
+    await bind_org(session, user.org_id)
+    record_audit(
+        session,
+        org_id=user.org_id,
+        actor_id=user.id,
+        action=AuditAction.PLATFORM_ADMIN_GRANTED,
+        target=f"user:{user.email}",
+        metadata={"source": "REVU_PLATFORM_ADMIN_EMAILS"},
+    )
+
+
 async def signup(
     session: AsyncSession, *, org_name: str, email: str, password: str
 ) -> tuple[User, TokenPair]:
@@ -82,6 +102,7 @@ async def signup(
     )
     session.add(user)
     await session.flush()
+    await _sync_platform_admin(session, user)
 
     tokens, _ = await _issue_token_pair(session, user)
     await session.commit()
@@ -92,9 +113,30 @@ async def authenticate(
     session: AsyncSession, *, email: str, password: str
 ) -> tuple[User, TokenPair]:
     user = await session.scalar(select(User).where(User.email == email))
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None:
+        raise InvalidCredentialsError(email)
+    # Login events belong to the user's organisation; the audit log is under
+    # row-level security, so act for it before recording.
+    await bind_org(session, user.org_id)
+    if not verify_password(password, user.password_hash):
+        record_audit(
+            session,
+            org_id=user.org_id,
+            actor_id=user.id,
+            action=AuditAction.AUTH_LOGIN_FAILED,
+            target=f"user:{user.email}",
+        )
+        await session.commit()
         raise InvalidCredentialsError(email)
 
+    await _sync_platform_admin(session, user)
+    record_audit(
+        session,
+        org_id=user.org_id,
+        actor_id=user.id,
+        action=AuditAction.AUTH_LOGIN,
+        target=f"user:{user.email}",
+    )
     tokens, _ = await _issue_token_pair(session, user)
     await session.commit()
     return user, tokens

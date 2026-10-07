@@ -5,6 +5,7 @@ module is imported here so `Base.metadata` is fully populated before Alembic
 autogenerate (or `Base.metadata.create_all`) runs.
 """
 
+from db.audit import AuditAction, record_audit
 from db.auth import RefreshToken
 from db.branch_index import BranchIndex, IndexUpdateLog
 from db.github import GitHubAppCredentials, WebhookDelivery
@@ -20,6 +21,7 @@ from db.tenancy import bind_org
 
 __all__ = [
     "AIProvider",
+    "AuditAction",
     "AnalysisRun",
     "AuditLog",
     "BranchIndex",
@@ -38,4 +40,5 @@ __all__ = [
     "User",
     "WebhookDelivery",
     "bind_org",
+    "record_audit",
 ]

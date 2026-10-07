@@ -8,6 +8,7 @@ with a real HMAC exactly as GitHub signs them. Nothing calls an LLM.
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -15,11 +16,17 @@ import pytest
 from api.core.config import get_settings
 from api.core.github import get_github_client
 from api.core.security import decode_access_token
+from api.db.session import get_db
 from api.main import app
+from api.services import github as github_service
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from db.organization import GithubInstallation, User, UserRole
+from db.repository import Repository
+from db.tenancy import bind_org
 from ghapp import GitHubAppConfig, GitHubClient, sign_payload
 from httpx import AsyncClient
+from sqlalchemy import select
 
 WEBHOOK_SECRET = "test-webhook-secret"
 INSTALLATION_ID = 4242
@@ -439,8 +446,14 @@ async def test_installation_deleted_deactivates_repos(
     )
 
     repos = (await api_client.get("/repos", headers=headers)).json()
+    installations = (await api_client.get("/github/installations", headers=headers)).json()
+
     assert repos and not any(r["is_active"] or r["connected"] for r in repos)
-    assert (await api_client.get("/github/installations", headers=headers)).json() == []
+    # Disconnected, not deleted: the data stays for the retention period.
+    assert all(r["disconnected_at"] and r["purge_after"] for r in repos)
+    assert [i["status"] for i in installations] == ["uninstalled"]
+    assert installations[0]["disconnected_repository_count"] == len(repos)
+    assert installations[0]["purge_after"] is not None
 
 
 async def test_installation_repositories_added_and_removed(
@@ -516,9 +529,7 @@ async def test_list_pulls_merges_latest_run(
     assert review.status_code == 202, review.text
     assert after[0]["latest_run"]["id"] == review.json()["id"]
     assert after[0]["latest_run"]["status"] == "queued"
-    assert _enqueued(api_client) == [
-        ("review_github_pr", (review.json()["id"], org_of(headers)))
-    ]
+    assert _enqueued(api_client) == [("review_github_pr", (review.json()["id"], org_of(headers)))]
 
 
 async def test_review_unknown_pr_is_404(api_client: AsyncClient, fake_github: FakeGitHub) -> None:
@@ -607,3 +618,205 @@ async def test_manual_repo_cannot_use_github_endpoints(
 
     assert pulls.status_code == 409
     assert index.status_code == 409
+
+
+# --- connection lifecycle (isolation hardening, PR C) -------------------------
+
+
+def _repos_by_name(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {r["full_name"]: r for r in rows}
+
+
+async def _audit_actions(client: AsyncClient, headers: dict[str, str]) -> list[str]:
+    page = (await client.get("/audit?limit=200", headers=headers)).json()
+    return [e["action"] for e in page["entries"]]
+
+
+def _repo_change(*repo_ids: int, action: str = "removed") -> dict[str, Any]:
+    names = {101: "acme/widgets", 102: "acme/gadgets"}
+    key = "repositories_removed" if action == "removed" else "repositories_added"
+    return {
+        "action": action,
+        "installation": {"id": INSTALLATION_ID},
+        key: [{"id": i, "full_name": names[i]} for i in repo_ids],
+    }
+
+
+async def test_a_removed_repository_is_disconnected_then_restored_when_added_back(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "restore@example.com")
+    await _link(api_client, headers)
+
+    await _send_webhook(api_client, "installation_repositories", _repo_change(102))
+    removed = _repos_by_name((await api_client.get("/repos", headers=headers)).json())
+    await _send_webhook(api_client, "installation_repositories", _repo_change(102, action="added"))
+    restored = _repos_by_name((await api_client.get("/repos", headers=headers)).json())
+
+    gadgets = removed["acme/gadgets"]
+    assert gadgets["is_active"] is False and gadgets["connected"] is False
+    assert gadgets["disconnected_at"] and gadgets["purge_after"] > gadgets["disconnected_at"]
+    assert restored["acme/gadgets"]["id"] == gadgets["id"]  # same row: history kept
+    assert restored["acme/gadgets"]["is_active"] is True
+    assert restored["acme/gadgets"]["disconnected_at"] is None
+    actions = await _audit_actions(api_client, headers)
+    assert actions[:2] == ["repository.connected", "repository.disconnected"]
+
+
+async def test_unsuspending_does_not_revive_repositories_removed_meanwhile(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "suspend@example.com")
+    await _link(api_client, headers)
+    installation = {"id": INSTALLATION_ID}
+
+    await _send_webhook(
+        api_client, "installation", {"action": "suspend", "installation": installation}
+    )
+    suspended = (await api_client.get("/github/installations", headers=headers)).json()
+    await _send_webhook(api_client, "installation_repositories", _repo_change(102))
+    await _send_webhook(
+        api_client, "installation", {"action": "unsuspend", "installation": installation}
+    )
+
+    repos = _repos_by_name((await api_client.get("/repos", headers=headers)).json())
+    after = (await api_client.get("/github/installations", headers=headers)).json()
+    assert suspended[0]["status"] == "suspended"
+    assert after[0]["status"] == "active"
+    assert repos["acme/widgets"]["is_active"] is True
+    assert repos["acme/gadgets"]["is_active"] is False
+    assert repos["acme/gadgets"]["disconnected_at"] is not None
+
+
+async def test_a_repository_stays_with_the_installation_that_connected_it_first(
+    api_client: AsyncClient, fake_github: FakeGitHub
+) -> None:
+    """Two installations of one organisation that can both see a repository
+    must not take turns owning it on every sync; the second only takes over
+    once the first is uninstalled."""
+    headers = await _signup(api_client, "pinned@example.com")
+    await _link(api_client, headers)
+    payload = [{"id": 101, "full_name": "acme/widgets", "default_branch": "main"}]
+
+    async for session in app.dependency_overrides[get_db]():
+        await bind_org(session, uuid.UUID(org_of(headers)))
+        first = await session.scalar(select(GithubInstallation))
+        assert first is not None
+        second = GithubInstallation(
+            org_id=first.org_id,
+            installation_id=INSTALLATION_ID + 1,
+            account_login="acme-second",
+            installed_at=datetime.now(UTC),
+        )
+        session.add(second)
+        await session.flush()
+
+        kept = await github_service.upsert_repositories(session, second, payload)
+        repo = await session.scalar(select(Repository).where(Repository.github_repo_id == 101))
+        assert kept == [] and repo is not None and repo.installation_id == first.id
+
+        first.uninstalled_at = datetime.now(UTC)
+        moved = await github_service.upsert_repositories(session, second, payload)
+        assert [r.id for r in moved] == [repo.id]
+        assert repo.installation_id == second.id
+        break
+
+
+async def test_repository_data_can_be_deleted_only_once_disconnected(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "delete-repo@example.com")
+    await _link(api_client, headers)
+    me = (await api_client.get("/auth/me", headers=headers)).json()
+    repo_id = await _repo_id(api_client, headers, "acme/gadgets")
+
+    while_connected = await api_client.delete(f"/repos/{repo_id}/data", headers=headers)
+    await _send_webhook(api_client, "installation_repositories", _repo_change(102))
+    once_removed = await api_client.delete(f"/repos/{repo_id}/data", headers=headers)
+
+    assert while_connected.status_code == 409
+    assert once_removed.status_code == 202
+    assert _enqueued(api_client) == [
+        ("purge_repository_data", (org_of(headers), repo_id, me["id"]))
+    ]
+    assert "data.deletion_requested" in await _audit_actions(api_client, headers)
+
+
+async def test_connection_data_can_be_deleted_only_after_uninstalling(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "delete-conn@example.com")
+    linked = await _link(api_client, headers)
+
+    while_installed = await api_client.delete(
+        f"/github/installations/{linked['id']}/data", headers=headers
+    )
+    await _send_webhook(
+        api_client, "installation", {"action": "deleted", "installation": {"id": INSTALLATION_ID}}
+    )
+    after_uninstall = await api_client.delete(
+        f"/github/installations/{linked['id']}/data", headers=headers
+    )
+
+    assert while_installed.status_code == 409
+    assert after_uninstall.status_code == 202
+    assert [name for name, _ in _enqueued(api_client)] == ["purge_installation_data"]
+    actions = await _audit_actions(api_client, headers)
+    assert "installation.uninstalled" in actions and "data.deletion_requested" in actions
+
+
+async def test_settings_deletion_and_audit_are_for_org_admins_only(
+    api_client: AsyncClient, fake_github: FakeGitHub
+) -> None:
+    headers = await _signup(api_client, "member-only@example.com")
+    await _link(api_client, headers)
+    repo_id = await _repo_id(api_client, headers, "acme/widgets")
+    async for session in app.dependency_overrides[get_db]():
+        user = await session.scalar(select(User).where(User.email == "member-only@example.com"))
+        assert user is not None
+        user.role = UserRole.MEMBER
+        await session.commit()
+        break
+
+    patched = await api_client.patch(
+        f"/repos/{repo_id}", json={"auto_review_enabled": True}, headers=headers
+    )
+    deleted = await api_client.delete(f"/repos/{repo_id}/data", headers=headers)
+    audit = await api_client.get("/audit", headers=headers)
+
+    assert (patched.status_code, deleted.status_code, audit.status_code) == (403, 403, 403)
+
+
+async def test_another_organisation_can_neither_delete_nor_read_the_audit_trail(
+    api_client: AsyncClient, fake_github: FakeGitHub
+) -> None:
+    owner = await _signup(api_client, "audit-owner@example.com")
+    await _link(api_client, owner)
+    repo_id = await _repo_id(api_client, owner, "acme/widgets")
+    other = await _signup(api_client, "audit-other@example.com")
+
+    deleted = await api_client.delete(f"/repos/{repo_id}/data", headers=other)
+    other_audit = (await api_client.get("/audit", headers=other)).json()["entries"]
+
+    assert deleted.status_code == 404
+    assert other_audit == []
+
+
+async def test_login_attempts_are_audited_and_the_trail_pages(api_client: AsyncClient) -> None:
+    headers = await _signup(api_client, "logins@example.com")
+    for password in ("wrong-password-1", "correct-horse-battery", "wrong-password-2"):
+        await api_client.post(
+            "/auth/login", json={"email": "logins@example.com", "password": password}
+        )
+
+    first = (await api_client.get("/audit?limit=2", headers=headers)).json()
+    second = (
+        await api_client.get(
+            "/audit", params={"limit": 2, "before": first["next_before"]}, headers=headers
+        )
+    ).json()
+
+    assert [e["action"] for e in first["entries"]] == ["auth.login_failed", "auth.login"]
+    assert [e["action"] for e in second["entries"]] == ["auth.login_failed"]
+    assert first["entries"][0]["actor_email"] == "logins@example.com"
+    assert second["next_before"] is None

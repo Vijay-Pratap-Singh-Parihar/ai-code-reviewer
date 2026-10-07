@@ -120,6 +120,40 @@ Every organisation's data is kept apart by the database itself, not only by `WHE
 `revu_app` and runs deliberately unfiltered queries, inserts and updates against every tenant
 table. A catalog test fails if a future table gains `org_id` without a policy.
 
+## Connection lifecycle, data retention and audit
+
+**Connections (GitHub App installations)** are `active`, `suspended` or `uninstalled`:
+
+| Event | What happens |
+|---|---|
+| A repository is added to an installation | Connected (or *restored*, keeping its history, if it was disconnected) |
+| Removed from the installation | Disconnected: inactive, `disconnected_at` starts the retention period |
+| Installation suspended on GitHub | Repositories paused; data kept, no retention clock |
+| Unsuspended | Repositories that are still connected resume; ones removed meanwhile stay disconnected |
+| App uninstalled | The connection is kept as `uninstalled`; all its repositories are disconnected |
+
+- **One repository, one connection.** If two installations of the same organisation can see a
+  repository, the first keeps it until it is uninstalled.
+- **Retention.** The worker's hourly `purge_expired_data` deletes every repository disconnected for
+  more than `REVU_DISCONNECTED_RETENTION_DAYS` (default 30), one organisation at a time under
+  row-level security. It removes the row (and with it every PR, run, finding and index), then
+  the clone and signed index blobs, then uninstalled connections with nothing left. It also
+  sweeps orphaned directories.
+- **Delete data now.** Org owners/admins can delete an uninstalled connection's data, or a
+  disconnected repository's, immediately: `DELETE /github/installations/{id}/data` or
+  `DELETE /repos/{id}/data`. Still-connected data is refused (`409`), since GitHub would sync it
+  straight back.
+- **Audit log.** Logins (and failed logins), platform-admin grants, GitHub App creation, linking,
+  syncs, suspensions, uninstalls, repositories connected and disconnected, settings changes,
+  reviews and index builds requested, and every deletion are recorded with actor, target and
+  details, in the same transaction as the change. `GET /audit` (owners/admins) lists them
+  newest first with cursor paging. Entries outlive the data they describe.
+- **Roles.** Repository settings, data deletion and the audit log need an organisation owner or
+  admin. Creating the GitHub App needs a **platform admin**: every signup owns its own
+  organisation, so "owner" can't be the bar for the App every organisation installs. Grant it
+  with `REVU_PLATFORM_ADMIN_EMAILS` or
+  `docker compose exec api python -m api.cli platform-admin grant you@example.com`.
+
 ## Tests that touch the database
 
 `apps/api/tests/test_models_db.py` runs real round-trip tests (enum storage, cascades, unique
