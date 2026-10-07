@@ -19,6 +19,7 @@ from db.branch_index import BranchIndex, BranchIndexStatus, IndexUpdateLog
 from db.organization import GithubInstallation, Organization
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
 from db.repository import Repository
+from db.tenancy import bind_org
 from ghapp import GitHubAppConfig, GitHubClient
 from git import Repo
 from revu.models import RunResult
@@ -102,6 +103,9 @@ async def _make_connected_repo(session: AsyncSession) -> Repository:
     org = Organization(name="Acme Inc")
     session.add(org)
     await session.flush()
+    # Act for this organisation, as a job does for the one in its
+    # arguments: the session runs under row-level security.
+    await bind_org(session, org.id)
     installation = GithubInstallation(
         org_id=org.id,
         installation_id=987654321012,  # > 2^31: exercises the BigInteger column
@@ -163,7 +167,7 @@ async def test_review_github_pr_diff_only_fetches_diff_and_records_head(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await review_github_pr(github_ctx, str(run.id))
+    await review_github_pr(github_ctx, str(run.id), str(run.org_id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.SUCCEEDED, run.error
@@ -194,7 +198,7 @@ async def test_review_github_pr_cross_file_reviews_a_checkout_of_the_pr_head(
 
     monkeypatch.setattr(analyze, "_run_cross_file", fake_run_cross_file)
 
-    await review_github_pr(github_ctx, str(run.id))
+    await review_github_pr(github_ctx, str(run.id), str(run.org_id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.SUCCEEDED, run.error
@@ -223,7 +227,7 @@ async def test_review_github_pr_marks_failed_when_github_errors(
 
     monkeypatch.setattr(analyze, "review_diff", should_not_run)
 
-    await review_github_pr(github_ctx, str(run.id))
+    await review_github_pr(github_ctx, str(run.id), str(run.org_id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.FAILED
@@ -237,7 +241,7 @@ async def test_review_github_pr_fails_fast_when_app_not_configured(
     run = await _make_github_run(worker_db_session, repo)
     github_ctx["github_client_factory"] = None
 
-    await review_github_pr(github_ctx, str(run.id))
+    await review_github_pr(github_ctx, str(run.id), str(run.org_id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.FAILED
@@ -259,7 +263,7 @@ async def test_sync_and_index_branch_builds_a_ready_index_from_the_fetched_branc
     worker_db_session.add(row)
     await worker_db_session.commit()
 
-    await sync_and_index_branch(github_ctx, str(row.id), None, False)
+    await sync_and_index_branch(github_ctx, str(row.id), str(row.org_id), None, False)
 
     await worker_db_session.refresh(row)
     assert row.status == BranchIndexStatus.READY
@@ -277,6 +281,7 @@ async def test_sync_and_index_branch_fails_row_for_unconnected_repo(
     org = Organization(name="Manual Org")
     worker_db_session.add(org)
     await worker_db_session.flush()
+    await bind_org(worker_db_session, org.id)
     repo = Repository(org_id=org.id, full_name="manual/only")
     worker_db_session.add(repo)
     await worker_db_session.flush()
@@ -289,7 +294,7 @@ async def test_sync_and_index_branch_fails_row_for_unconnected_repo(
     worker_db_session.add(row)
     await worker_db_session.commit()
 
-    await sync_and_index_branch(github_ctx, str(row.id), None, False)
+    await sync_and_index_branch(github_ctx, str(row.id), str(row.org_id), None, False)
 
     await worker_db_session.refresh(row)
     assert row.status == BranchIndexStatus.FAILED
@@ -302,8 +307,9 @@ async def test_sync_and_index_branch_fails_row_for_unconnected_repo(
 
 
 async def test_jobs_return_quietly_for_missing_rows(github_ctx: dict[str, Any]) -> None:
-    await review_github_pr(github_ctx, str(uuid.uuid4()))
-    await sync_and_index_branch(github_ctx, str(uuid.uuid4()), None, False)
+    org_id = str(uuid.uuid4())
+    await review_github_pr(github_ctx, str(uuid.uuid4()), org_id)
+    await sync_and_index_branch(github_ctx, str(uuid.uuid4()), org_id, None, False)
 
 
 def test_git_errors_never_echo_the_token(tmp_path: Path) -> None:

@@ -8,11 +8,13 @@ from sqlalchemy import engine_from_config, pool
 
 config = context.config
 
-if config.config_file_name is not None:
+# Callers that drive Alembic programmatically (the test suite's schema
+# setup) pass the URL in and keep their own logging configuration.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name)
 
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url_sync)
+config.set_main_option("sqlalchemy.url", config.attributes.get("url") or settings.database_url_sync)
 
 target_metadata = Base.metadata
 

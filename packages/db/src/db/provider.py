@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +35,7 @@ class AIProvider(UUIDPrimaryKeyMixin, Base):
     """
 
     __tablename__ = "ai_providers"
+    __table_args__ = (UniqueConstraint("id", "org_id", name="uq_ai_providers_id_org"),)
 
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
@@ -52,15 +53,21 @@ class ModelRoute(UUIDPrimaryKeyMixin, Base):
     """Which provider + model handles each cost tier for an organisation."""
 
     __tablename__ = "model_routes"
-    __table_args__ = (UniqueConstraint("org_id", "tier", name="uq_model_routes_org_tier"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "tier", name="uq_model_routes_org_tier"),
+        ForeignKeyConstraint(
+            ["provider_id", "org_id"],
+            ["ai_providers.id", "ai_providers.org_id"],
+            ondelete="CASCADE",
+            name="fk_model_routes_provider_org",
+        ),
+    )
 
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
     tier: Mapped[ModelTier] = mapped_column(pg_enum(ModelTier), nullable=False)
-    provider_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="CASCADE"), nullable=False
-    )
+    provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     provider: Mapped[AIProvider] = relationship(back_populates="model_routes")

@@ -12,9 +12,11 @@ detection, incremental vs. full) is covered by
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from api.core.security import decode_access_token
 from api.db.session import get_db
 from api.main import app
 from db.branch_index import BranchIndex, BranchIndexStatus
+from db.tenancy import bind_org
 from httpx import AsyncClient
 
 
@@ -144,6 +146,7 @@ async def test_get_branch_index_returns_ready_row_and_flags_stale_during_rebuild
     )
     session_dep = app.dependency_overrides[get_db]
     async for session in session_dep():
+        await bind_org(session, decode_access_token(token).org_id)
         session.add(ready_row)
         await session.commit()
 

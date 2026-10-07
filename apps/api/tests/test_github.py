@@ -14,6 +14,7 @@ import httpx
 import pytest
 from api.core.config import get_settings
 from api.core.github import get_github_client
+from api.core.security import decode_access_token
 from api.main import app
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -169,6 +170,11 @@ def _pr_event(action: str, **pull_overrides: Any) -> dict[str, Any]:
         "repository": {"id": 101, "full_name": "acme/widgets", "default_branch": "main"},
         "pull_request": _pull_payload(7, **pull_overrides),
     }
+
+
+def org_of(headers: dict[str, str]) -> str:
+    """The organisation a signed-up user's token acts for."""
+    return str(decode_access_token(headers["Authorization"].removeprefix("Bearer ")).org_id)
 
 
 def _enqueued(client: AsyncClient) -> list[tuple[str, tuple[object, ...]]]:
@@ -352,7 +358,7 @@ async def test_pr_opened_reviews_once_when_auto_review_is_on(
     run_id = first.json()["enqueued"][0]
     assert redelivered.json()["status"] == "duplicate"
     assert "already reviewed" in reopened.json()["detail"]
-    assert _enqueued(api_client) == [("review_github_pr", (run_id,))]
+    assert _enqueued(api_client) == [("review_github_pr", (run_id, org_of(headers)))]
 
     run = (await api_client.get(f"/analysis/{run_id}", headers=headers)).json()
     assert run["status"] == "queued"
@@ -487,7 +493,7 @@ async def test_push_to_default_branch_refreshes_only_indexed_branches(
         "sync_and_index_branch",
         "sync_and_index_branch",
     ]
-    assert _enqueued(api_client)[1][1][1:] == ("c" * 40, False)
+    assert _enqueued(api_client)[1][1][1:] == (org_of(headers), "c" * 40, False)
 
 
 # --- connected repo endpoints -------------------------------------------------
@@ -510,7 +516,9 @@ async def test_list_pulls_merges_latest_run(
     assert review.status_code == 202, review.text
     assert after[0]["latest_run"]["id"] == review.json()["id"]
     assert after[0]["latest_run"]["status"] == "queued"
-    assert _enqueued(api_client) == [("review_github_pr", (review.json()["id"],))]
+    assert _enqueued(api_client) == [
+        ("review_github_pr", (review.json()["id"], org_of(headers)))
+    ]
 
 
 async def test_review_unknown_pr_is_404(api_client: AsyncClient, fake_github: FakeGitHub) -> None:
@@ -553,7 +561,9 @@ async def test_index_endpoint_defaults_to_the_default_branch(
 
     assert response.status_code == 202
     assert response.json()["branch_name"] == "trunk"
-    assert _enqueued(api_client) == [("sync_and_index_branch", (response.json()["id"], None, True))]
+    assert _enqueued(api_client) == [
+        ("sync_and_index_branch", (response.json()["id"], org_of(headers), None, True))
+    ]
 
 
 async def test_repos_are_invisible_to_other_orgs(

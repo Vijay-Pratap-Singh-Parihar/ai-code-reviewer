@@ -26,8 +26,9 @@ from db.github import WebhookDelivery
 from db.organization import GithubInstallation
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
 from db.repository import Repository
+from db.tenancy import bind_org
 from ghapp import GitHubClient
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,11 +61,19 @@ async def link_installation(
     details = await gh.get_installation(installation_id)
     account = details.get("account") or {}
 
-    installation = await session.scalar(
-        select(GithubInstallation).where(GithubInstallation.installation_id == installation_id)
-    )
-    if installation is not None and installation.org_id != org_id:
+    # A GitHub installation grants access to one account's repositories, so
+    # it can be linked to exactly one revu organisation. Row-level security
+    # hides another organisation's row, so ask the one cross-organisation
+    # lookup the database exposes for this.
+    owner = await installation_org(session, installation_id)
+    if owner is not None and owner != org_id:
         raise InstallationOwnedByAnotherOrgError(installation_id)
+    installation = await session.scalar(
+        select(GithubInstallation).where(
+            GithubInstallation.org_id == org_id,
+            GithubInstallation.installation_id == installation_id,
+        )
+    )
     if installation is None:
         installation = GithubInstallation(
             org_id=org_id, installation_id=installation_id, installed_at=datetime.now(UTC)
@@ -106,23 +115,27 @@ async def resync_installation(
 async def upsert_repositories(
     session: AsyncSession, installation: GithubInstallation, payloads: list[dict[str, Any]]
 ) -> list[Repository]:
-    """Match each GitHub repo by its stable numeric ID first, then by name
-    (adopting a row the manual diff-paste flow created earlier). A row owned
-    by another org is left alone: `full_name` is globally unique, and
-    silently moving it would hand that org's history to this one.
+    """Match each GitHub repo, within the installation's organisation, by its
+    stable numeric ID first, then by name (adopting a row the manual
+    diff-paste flow created earlier). Another organisation connecting the
+    same GitHub repository gets its own, separate row.
     """
+    org_id = installation.org_id
     synced: list[Repository] = []
     for payload in payloads:
         github_id = int(payload["id"])
         full_name = str(payload["full_name"])
         repo = await session.scalar(
-            select(Repository).where(Repository.github_repo_id == github_id)
+            select(Repository).where(
+                Repository.org_id == org_id, Repository.github_repo_id == github_id
+            )
         )
         if repo is None:
-            repo = await session.scalar(select(Repository).where(Repository.full_name == full_name))
-        if repo is not None and repo.org_id != installation.org_id:
-            logger.warning("repo %s already belongs to another org; not linking", full_name)
-            continue
+            repo = await session.scalar(
+                select(Repository).where(
+                    Repository.org_id == org_id, Repository.full_name == full_name
+                )
+            )
         if repo is None:
             repo = Repository(org_id=installation.org_id, full_name=full_name)
             session.add(repo)
@@ -161,14 +174,33 @@ async def record_delivery(
     return result.scalar_one_or_none() is not None
 
 
+async def installation_org(session: AsyncSession, installation_id: int) -> uuid.UUID | None:
+    """The organisation a GitHub installation is linked to, if any, via the
+    `revu_installation_org` SECURITY DEFINER function: the only lookup that
+    crosses organisations, and it reveals nothing but that one mapping."""
+    org_id: uuid.UUID | None = await session.scalar(
+        select(func.revu_installation_org(installation_id))
+    )
+    return org_id
+
+
 async def _installation_by_github_id(
     session: AsyncSession, installation_payload: dict[str, Any] | None
 ) -> GithubInstallation | None:
+    """Webhooks arrive before any organisation is known: find the linked
+    organisation, bind the session to it, then load the installation under
+    row-level security like any other request."""
     if not installation_payload or "id" not in installation_payload:
         return None
+    installation_id = int(installation_payload["id"])
+    org_id = await installation_org(session, installation_id)
+    if org_id is None:
+        return None
+    await bind_org(session, org_id)
     result: GithubInstallation | None = await session.scalar(
         select(GithubInstallation).where(
-            GithubInstallation.installation_id == int(installation_payload["id"])
+            GithubInstallation.org_id == org_id,
+            GithubInstallation.installation_id == installation_id,
         )
     )
     return result
@@ -206,7 +238,7 @@ async def upsert_pull_request(
         select(PullRequest).where(PullRequest.repo_id == repo.id, PullRequest.number == number)
     )
     if pr is None:
-        pr = PullRequest(repo_id=repo.id, number=number)
+        pr = PullRequest(repo_id=repo.id, org_id=repo.org_id, number=number)
         session.add(pr)
     pr.title = str(pr_payload.get("title") or f"PR #{number}")[:500]
     pr.body = pr_payload.get("body") or ""
@@ -234,6 +266,7 @@ async def queue_github_review(
 ) -> AnalysisRun:
     run = AnalysisRun(
         pr_id=pr.id,
+        org_id=pr.org_id,
         branch_index_id=branch_index_id,
         config_snapshot={
             "agent": agent,
@@ -249,7 +282,7 @@ async def queue_github_review(
     )
     session.add(run)
     await session.commit()
-    await redis.enqueue_job("review_github_pr", str(run.id))
+    await redis.enqueue_job("review_github_pr", str(run.id), str(run.org_id))
     return run
 
 
@@ -308,6 +341,7 @@ async def queue_github_index(
 ) -> BranchIndex:
     row = BranchIndex(
         repo_id=repo.id,
+        org_id=repo.org_id,
         branch_name=branch_name,
         head_sha=target_sha,
         status=BranchIndexStatus.PENDING,
@@ -315,7 +349,9 @@ async def queue_github_index(
     )
     session.add(row)
     await session.commit()
-    await redis.enqueue_job("sync_and_index_branch", str(row.id), target_sha, force_full)
+    await redis.enqueue_job(
+        "sync_and_index_branch", str(row.id), str(row.org_id), target_sha, force_full
+    )
     return row
 
 

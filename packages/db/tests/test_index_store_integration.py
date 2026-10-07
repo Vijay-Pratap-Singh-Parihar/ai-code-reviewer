@@ -9,40 +9,32 @@ proves the hand-off dict this stage produces is valid input for that model,
 against a real Postgres round-trip rather than a mock.
 """
 
-import os
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from db.base import Base
 from db.branch_index import BranchIndex, BranchIndexStatus
 from db.organization import Organization
 from db.repository import Repository
+from db.testing import TEST_DATABASE_URL, DatabaseUnavailable, prepare_test_database
 from revu.index import store
 from revu.index.graph import build_index_at_path
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_test",
-)
 
 
 @pytest.fixture(scope="module")
 def db_engine() -> Iterator[Engine]:
-    engine = create_engine(TEST_DATABASE_URL)
     try:
-        with engine.connect():
-            pass
-    except OperationalError:
+        prepare_test_database()
+    except DatabaseUnavailable:
         pytest.skip(f"no Postgres reachable at {TEST_DATABASE_URL}; skipping DB-backed tests")
 
-    Base.metadata.create_all(engine)
+    # Schema owner: this test is about the BranchIndex column shapes, not
+    # tenancy, so it runs where row-level security does not apply.
+    engine = create_engine(TEST_DATABASE_URL)
     yield engine
-    Base.metadata.drop_all(engine)
     engine.dispose()
 
 

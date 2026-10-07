@@ -42,6 +42,7 @@ from typing import Any
 
 from db.branch_index import BranchIndex, BranchIndexStatus, IndexUpdateLog, IndexUpdateMode
 from db.repository import Repository
+from db.tenancy import bind_org
 from revu.index import vcs
 from revu.index.graph import IndexResult, build_index
 from revu.index.incremental import incremental_update
@@ -173,6 +174,7 @@ def _persist_index_result(
 async def update_branch_index(
     ctx: dict[str, Any],
     branch_index_id: str,
+    org_id: str,
     repo_path: str,
     requested_sha: str | None,
     force_full: bool,
@@ -181,6 +183,7 @@ async def update_branch_index(
     storage = storage_from_ctx(ctx)
 
     async with session_factory() as session:
+        await bind_org(session, uuid.UUID(org_id))
         row = await session.get(BranchIndex, uuid.UUID(branch_index_id))
         if row is None:
             logger.error("update_branch_index: row %s no longer exists", branch_index_id)

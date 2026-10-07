@@ -30,20 +30,21 @@ CHANGED_FILE = "apps/api/src/api/services/repositories.py"
 CALLER_FILE = "apps/api/src/api/services/analysis.py"
 
 _CHANGED_LINE = (
-    "+    repo = await session.scalar("
-    "select(Repository).where(Repository.full_name == full_name.strip()))"
+    "+        select(Repository).where("
+    "Repository.org_id == org_id, Repository.full_name == full_name.strip())"
 )
 
 DIFF_TEXT = f"""\
 diff --git a/{CHANGED_FILE} b/{CHANGED_FILE}
 --- a/{CHANGED_FILE}
 +++ b/{CHANGED_FILE}
-@@ -32,4 +32,4 @@ async def get_or_create_repository(
+@@ -19,5 +19,5 @@ async def get_or_create_repository(
  ) -> Repository:
--    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name))
+     repo = await session.scalar(
+-        select(Repository).where(Repository.org_id == org_id, Repository.full_name == full_name)
 {_CHANGED_LINE}
+     )
      if repo is not None:
-         if repo.org_id != org_id:
 """
 
 
@@ -53,8 +54,8 @@ def _finding_json(evidence_file: str) -> str:
             "findings": [
                 {
                     "file_path": CHANGED_FILE,
-                    "line_start": 32,
-                    "line_end": 35,
+                    "line_start": 20,
+                    "line_end": 22,
                     "category": "correctness",
                     "severity": "medium",
                     "message": (

@@ -10,16 +10,11 @@ from sqlalchemy.orm import selectinload
 
 from api.core.config import get_settings
 from api.schemas.analysis import AnalysisRequest
-from api.services.repositories import RepositoryOwnedByAnotherOrgError, get_or_create_repository
+from api.services.repositories import get_or_create_repository
 
 settings = get_settings()
 
-# Re-exported for backward compatibility: this module used to define it
-# itself (Stage 3); it moved to `api.services.repositories` in Stage 5 so
-# other services could share it without importing this module's
-# analysis-specific pull-request logic.
 __all__ = [
-    "RepositoryOwnedByAnotherOrgError",
     "create_analysis_run",
     "get_run_for_org",
 ]
@@ -42,6 +37,7 @@ async def _get_or_create_pull_request(
 
     pr = PullRequest(
         repo_id=repo.id,
+        org_id=repo.org_id,
         number=body.pr_number,
         title=body.pr_title,
         body=body.pr_body,
@@ -66,6 +62,7 @@ async def create_analysis_run(
 
     run = AnalysisRun(
         pr_id=pr.id,
+        org_id=pr.org_id,
         config_snapshot={
             "agent": body.agent,
             "model": settings.revu_model_review,

@@ -35,7 +35,9 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://revu:revu_dev_password@postgres:5432/revu}
+      # Row-level security applies to `revu_app` only; migrations
+      # (`alembic upgrade head`, DATABASE_URL_SYNC) run as the schema owner.
+      DATABASE_URL: ${APP_DATABASE_URL:-postgresql+asyncpg://revu_app:revu_app_dev_password@postgres:5432/revu}
       DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql+psycopg://revu:revu_dev_password@postgres:5432/revu}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     volumes:
@@ -58,7 +60,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://revu:revu_dev_password@postgres:5432/revu}
+      DATABASE_URL: ${APP_DATABASE_URL:-postgresql+asyncpg://revu_app:revu_app_dev_password@postgres:5432/revu}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # Index blobs and the GitHub repo cache live on a named volume so they
       # survive image rebuilds (BranchIndex.graph_ref stores these paths).
@@ -84,7 +86,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://revu:revu_dev_password@postgres:5432/revu}
+      DATABASE_URL: ${APP_DATABASE_URL:-postgresql+asyncpg://revu_app:revu_app_dev_password@postgres:5432/revu}
       WEBHOOK_RELAY_TARGET: http://api:8000/github/webhook
     depends_on:
       - api

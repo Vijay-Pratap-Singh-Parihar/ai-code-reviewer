@@ -13,6 +13,10 @@ from db.organization import GithubInstallation, Organization, User
 from db.provider import AIProvider, ModelRoute
 from db.pull_request import AnalysisRun, ContextBundleRecord, FindingRecord, PullRequest
 from db.repository import Repository, TrackedBranch
+from db.tenancy import bind_org
+
+# Importing `db` registers `db.tenancy`'s session listener, so every session
+# in every process applies its organisation binding at transaction start.
 
 __all__ = [
     "AIProvider",
@@ -33,4 +37,5 @@ __all__ = [
     "TrackedBranch",
     "User",
     "WebhookDelivery",
+    "bind_org",
 ]

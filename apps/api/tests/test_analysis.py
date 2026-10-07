@@ -1,8 +1,10 @@
 import uuid
 
+from api.core.security import decode_access_token
 from api.db.session import get_db
 from api.main import app
 from db.pull_request import AnalysisRun, FindingRecord
+from db.tenancy import bind_org
 from httpx import AsyncClient
 from revu.models import FindingCategory, Severity
 
@@ -57,9 +59,10 @@ async def test_trigger_analysis_creates_queued_run_and_enqueues_job(
     assert len(enqueued) == 1
     function_name, args = enqueued[0]
     assert function_name == "analyze_pr"
-    # Only the run id crosses the queue; the worker reads everything else
-    # back from the rows this request wrote.
-    assert args == (body["id"],)
+    # Only the run id and its organisation cross the queue; the worker
+    # reads everything else back from the rows this request wrote.
+    assert args[0] == body["id"]
+    assert len(args) == 2 and uuid.UUID(str(args[1]))
 
 
 async def test_trigger_analysis_requires_auth(api_client: AsyncClient) -> None:
@@ -121,27 +124,34 @@ async def test_get_analysis_from_another_org_returns_404(api_client: AsyncClient
     assert response.status_code == 404
 
 
-async def test_trigger_analysis_conflicts_when_repo_owned_by_another_org(
+async def test_same_repo_name_in_two_orgs_gives_each_its_own_isolated_copy(
     api_client: AsyncClient,
 ) -> None:
-    """Regression test: `repositories.full_name` is globally unique (it
-    models a real GitHub repo, which can only belong to one org's App
-    installation). A second org posting the same `repo_full_name` must get a
-    clear conflict, not silently have their PR attached to the first org's
-    repository — which previously made the run invisible to its own creator.
-    """
-    token_a = await _signup_and_get_token(api_client, "conflict-a@example.com")
-    first = await api_client.post(
+    """Repositories are unique per organisation: a second org reviewing the
+    same repository gets its own row and runs, and neither can read the
+    other's."""
+    token_a = await _signup_and_get_token(api_client, "copy-a@example.com")
+    run_a = await api_client.post(
         "/analysis", json=_analysis_payload(), headers=_auth_header(token_a)
     )
-    assert first.status_code == 202
+    assert run_a.status_code == 202, run_a.text
 
-    token_b = await _signup_and_get_token(api_client, "conflict-b@example.com")
-    second = await api_client.post(
+    token_b = await _signup_and_get_token(api_client, "copy-b@example.com")
+    run_b = await api_client.post(
         "/analysis", json=_analysis_payload(), headers=_auth_header(token_b)
     )
+    assert run_b.status_code == 202, run_b.text
 
-    assert second.status_code == 409
+    repos_a = (await api_client.get("/repos", headers=_auth_header(token_a))).json()
+    repos_b = (await api_client.get("/repos", headers=_auth_header(token_b))).json()
+    assert [r["full_name"] for r in repos_a] == ["acme/widgets"]
+    assert [r["full_name"] for r in repos_b] == ["acme/widgets"]
+    assert repos_a[0]["id"] != repos_b[0]["id"]
+
+    cross = await api_client.get(
+        f"/analysis/{run_a.json()['id']}", headers=_auth_header(token_b)
+    )
+    assert cross.status_code == 404
 
 
 async def test_trigger_analysis_rejects_cross_file(api_client: AsyncClient) -> None:
@@ -184,6 +194,7 @@ async def test_get_analysis_includes_each_finding_s_evidence_trail(
 
     session_dep = app.dependency_overrides[get_db]
     async for session in session_dep():
+        await bind_org(session, decode_access_token(token).org_id)
         run = await session.get(AnalysisRun, uuid.UUID(run_id))
         assert run is not None
         session.add(

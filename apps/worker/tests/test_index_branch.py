@@ -12,12 +12,14 @@ Two layers, matching the task's testing bar:
   never has to reason about a half-written row because none is ever created.
 """
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from db.branch_index import BranchIndex, BranchIndexStatus, IndexUpdateLog, IndexUpdateMode
 from db.organization import Organization
 from db.repository import Repository
+from db.tenancy import bind_org
 from git import Repo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -78,8 +80,12 @@ def test_decide_and_build_fast_forward_is_incremental(tmp_path: Path) -> None:
 
     old_result = build_index(tmp_path, sha_1)
     save_index_result(
-        old_result, repo_identifier="acme/widgets", branch_name="main", head_sha=sha_1,
-        storage_dir=tmp_path / ".blobs", signing_key=KEY,
+        old_result,
+        repo_identifier="acme/widgets",
+        branch_name="main",
+        head_sha=sha_1,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
     )
     previous = BranchIndex(
         repo_id=None, branch_name="main", head_sha=sha_1, status=BranchIndexStatus.READY
@@ -194,6 +200,9 @@ async def _make_repo(session: AsyncSession, full_name: str = "acme/widgets") -> 
     org = Organization(name="Acme Inc")
     session.add(org)
     await session.flush()
+    # Act for this organisation, as a job does for the one in its
+    # arguments: the session runs under row-level security.
+    await bind_org(session, org.id)
     repo = Repository(org_id=org.id, full_name=full_name)
     session.add(repo)
     await session.flush()
@@ -203,8 +212,15 @@ async def _make_repo(session: AsyncSession, full_name: str = "acme/widgets") -> 
 async def _make_pending_row(
     session: AsyncSession, repo: Repository, *, branch_name: str = "main"
 ) -> BranchIndex:
+    # Python-side created_at, like the production code that queues builds:
+    # Postgres now() is constant within this test's one outer transaction, so
+    # rows would tie and "the latest ready row" would depend on the query plan.
     row = BranchIndex(
-        repo_id=repo.id, branch_name=branch_name, head_sha=None, status=BranchIndexStatus.PENDING
+        repo_id=repo.id,
+        branch_name=branch_name,
+        head_sha=None,
+        status=BranchIndexStatus.PENDING,
+        created_at=datetime.now(UTC),
     )
     session.add(row)
     await session.flush()
@@ -237,7 +253,9 @@ async def test_update_branch_index_first_build_succeeds_and_is_full(
     row = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
 
-    await index_branch.update_branch_index(worker_ctx, str(row.id), str(repo_dir), sha, False)
+    await index_branch.update_branch_index(
+        worker_ctx, str(row.id), str(row.org_id), str(repo_dir), sha, False
+    )
 
     await worker_db_session.refresh(row)
     assert row.status == BranchIndexStatus.READY
@@ -271,7 +289,9 @@ async def test_update_branch_index_second_build_is_incremental(
     repo_row = await _make_repo(worker_db_session)
     row_1 = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
-    await index_branch.update_branch_index(worker_ctx, str(row_1.id), str(repo_dir), sha_1, False)
+    await index_branch.update_branch_index(
+        worker_ctx, str(row_1.id), str(row_1.org_id), str(repo_dir), sha_1, False
+    )
     await worker_db_session.refresh(row_1)
     assert row_1.status == BranchIndexStatus.READY
 
@@ -280,7 +300,9 @@ async def test_update_branch_index_second_build_is_incremental(
     )
     row_2 = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
-    await index_branch.update_branch_index(worker_ctx, str(row_2.id), str(repo_dir), sha_2, False)
+    await index_branch.update_branch_index(
+        worker_ctx, str(row_2.id), str(row_2.org_id), str(repo_dir), sha_2, False
+    )
 
     await worker_db_session.refresh(row_2)
     assert row_2.status == BranchIndexStatus.READY
@@ -311,13 +333,15 @@ async def test_update_branch_index_detects_force_push_and_does_a_full_rebuild(
     repo_row = await _make_repo(worker_db_session)
     row_1 = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
-    await index_branch.update_branch_index(worker_ctx, str(row_1.id), str(repo_dir), sha_1, False)
+    await index_branch.update_branch_index(
+        worker_ctx, str(row_1.id), str(row_1.org_id), str(repo_dir), sha_1, False
+    )
 
     forward_sha = _commit(git_repo, "a.py", "def f():\n    return 2\n", "second")
     row_2 = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
     await index_branch.update_branch_index(
-        worker_ctx, str(row_2.id), str(repo_dir), forward_sha, False
+        worker_ctx, str(row_2.id), str(row_2.org_id), str(repo_dir), forward_sha, False
     )
     await worker_db_session.refresh(row_2)
     assert row_2.status == BranchIndexStatus.READY
@@ -327,7 +351,7 @@ async def test_update_branch_index_detects_force_push_and_does_a_full_rebuild(
     row_3 = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
     await index_branch.update_branch_index(
-        worker_ctx, str(row_3.id), str(repo_dir), rewritten_sha, False
+        worker_ctx, str(row_3.id), str(row_3.org_id), str(repo_dir), rewritten_sha, False
     )
 
     await worker_db_session.refresh(row_3)
@@ -354,7 +378,9 @@ async def test_update_branch_index_resolves_branch_head_when_no_sha_given(
     row = await _make_pending_row(worker_db_session, repo_row, branch_name=branch_name)
     await worker_db_session.commit()
 
-    await index_branch.update_branch_index(worker_ctx, str(row.id), str(repo_dir), None, False)
+    await index_branch.update_branch_index(
+        worker_ctx, str(row.id), str(row.org_id), str(repo_dir), None, False
+    )
 
     await worker_db_session.refresh(row)
     assert row.status == BranchIndexStatus.READY
@@ -375,7 +401,7 @@ async def test_update_branch_index_marks_failed_on_build_error(
     await worker_db_session.commit()
 
     await index_branch.update_branch_index(
-        worker_ctx, str(row.id), str(not_a_repo), "a" * 40, False
+        worker_ctx, str(row.id), str(row.org_id), str(not_a_repo), "a" * 40, False
     )
 
     await worker_db_session.refresh(row)
@@ -406,7 +432,9 @@ async def test_update_branch_index_persists_unresolved_symbols(
     row = await _make_pending_row(worker_db_session, repo_row)
     await worker_db_session.commit()
 
-    await index_branch.update_branch_index(worker_ctx, str(row.id), str(repo_dir), sha, False)
+    await index_branch.update_branch_index(
+        worker_ctx, str(row.id), str(row.org_id), str(repo_dir), sha, False
+    )
 
     await worker_db_session.refresh(row)
     assert row.status == BranchIndexStatus.READY
@@ -418,7 +446,12 @@ async def test_update_branch_index_returns_early_when_row_missing(
 ) -> None:
     # Must not raise even though the row doesn't exist.
     await index_branch.update_branch_index(
-        worker_ctx, "00000000-0000-0000-0000-000000000000", "/nonexistent", "a" * 40, False
+        worker_ctx,
+        "00000000-0000-0000-0000-000000000000",
+        "00000000-0000-0000-0000-000000000000",
+        "/nonexistent",
+        "a" * 40,
+        False,
     )
 
 
@@ -435,8 +468,12 @@ def test_decide_and_build_rebuilds_fully_when_previous_blob_fails_its_signature(
     from revu.index.store import save_index_result
 
     save_index_result(
-        build_index(tmp_path, sha_1), repo_identifier="acme/widgets", branch_name="main",
-        head_sha=sha_1, storage_dir=tmp_path / ".blobs", signing_key=b"other-key" * 4,
+        build_index(tmp_path, sha_1),
+        repo_identifier="acme/widgets",
+        branch_name="main",
+        head_sha=sha_1,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=b"other-key" * 4,
     )
     previous = BranchIndex(
         repo_id=None, branch_name="main", head_sha=sha_1, status=BranchIndexStatus.READY
