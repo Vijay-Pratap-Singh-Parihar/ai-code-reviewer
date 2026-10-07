@@ -99,7 +99,7 @@ export function AppSidebar() {
             <SidebarMenu>
               {PLANNED_ITEMS.map((item) => (
                 <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton disabled tooltip={`${item.title} — coming in a later stage`}>
+                  <SidebarMenuButton disabled tooltip={`${item.title}: coming in a later stage`}>
                     <item.icon />
                     <span>{item.title}</span>
                   </SidebarMenuButton>

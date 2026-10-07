@@ -100,9 +100,9 @@ export function PullRequestList({ repoId, hasReadyIndex }: { repoId: string; has
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="diff_only">diff_only — cheap, diff text only</SelectItem>
+            <SelectItem value="diff_only">diff_only: cheap, diff text only</SelectItem>
             <SelectItem value="cross_file" disabled={!hasReadyIndex}>
-              cross_file — reads the repo (~4x cost){hasReadyIndex ? "" : " · build an index first"}
+              cross_file: reads the repo (~4x cost){hasReadyIndex ? "" : " · build an index first"}
             </SelectItem>
           </SelectContent>
         </Select>

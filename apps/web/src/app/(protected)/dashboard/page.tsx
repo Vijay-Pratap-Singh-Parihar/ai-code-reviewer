@@ -37,7 +37,7 @@ export default function DashboardPage() {
         <summary className="flex cursor-pointer list-none items-center gap-2 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
           <ChevronRight className="size-4 transition-transform group-open:rotate-90" />
           Advanced: review a pasted diff
-          <span className="font-normal text-muted-foreground">— no GitHub connection needed</span>
+          <span className="font-normal text-muted-foreground">(no GitHub connection needed)</span>
         </summary>
         <div className="p-4 pt-0">
           <Card>

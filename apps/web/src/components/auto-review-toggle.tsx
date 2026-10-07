@@ -37,7 +37,7 @@ export function AutoReviewToggle({ repo, showHint = false }: { repo: RepositoryP
         <p className="text-xs text-muted-foreground">
           {checked
             ? "New and updated PRs are reviewed automatically (diff_only, billed). Drafts are skipped."
-            : "Off — PRs are only reviewed when you click Review."}
+            : "Off: PRs are only reviewed when you click Review."}
         </p>
       )}
       {mutation.isError && (

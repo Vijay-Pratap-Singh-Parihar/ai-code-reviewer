@@ -89,7 +89,7 @@ export function BranchIndexCard({ repo }: { repo: RepositoryPublic }) {
         </Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        Needed only for <code className="font-mono">cross_file</code> reviews. Free — no LLM calls.
+        Needed only for <code className="font-mono">cross_file</code> reviews. Free, no LLM calls.
       </p>
     </div>
   );
