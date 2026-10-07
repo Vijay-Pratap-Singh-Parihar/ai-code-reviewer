@@ -58,6 +58,14 @@ def remove_worktree(repo_path: Path, worktree_path: Path) -> None:
             repo.git.worktree("prune")
 
 
+def discard_worktree(repo_path: Path, worktree_path: Path) -> None:
+    """Remove a worktree `add_worktree` put in a fresh temp directory, and
+    that directory too. `remove_worktree` alone leaves the empty
+    `revu-index-*` parent behind, one per checkout."""
+    remove_worktree(repo_path, worktree_path)
+    shutil.rmtree(worktree_path.parent, ignore_errors=True)
+
+
 @contextmanager
 def worktree_checkout(repo_path: Path, commit_sha: str) -> Iterator[Path]:
     """Context manager: checkout `commit_sha` into a temporary worktree,
@@ -67,5 +75,4 @@ def worktree_checkout(repo_path: Path, commit_sha: str) -> Iterator[Path]:
     try:
         yield worktree_path
     finally:
-        remove_worktree(repo_path, worktree_path)
-        shutil.rmtree(worktree_path.parent, ignore_errors=True)
+        discard_worktree(repo_path, worktree_path)

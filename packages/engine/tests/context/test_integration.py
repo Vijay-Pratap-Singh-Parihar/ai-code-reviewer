@@ -11,23 +11,15 @@ test):**
   - `api.services.repositories.get_or_create_repository`
     (`apps/api/src/api/services/repositories.py:30-42`) has exactly one
     caller anywhere in this repository whose call the Stage 4 indexer
-    resolves: `api.services.branch_index.trigger_index_build`, at
-    `apps/api/src/api/services/branch_index.py:99` (a bare call to the
-    directly-imported name).
-  - A second module, `api.services.analysis`, also imports
-    `get_or_create_repository` (`apps/api/src/api/services/analysis.py:13`)
-    but calls it through a module-level alias
-    (`_get_or_create_repository = get_or_create_repository`,
-    `analysis.py:24`), which the indexer's pure name-based call resolution
-    does not resolve back to the aliased target (a real, pre-existing Stage
-    4 limitation - "call through a local variable requires type inference" -
-    not something this stage worked around). So `analysis.py` is a real
-    *importer* of the changed module but not a resolved *caller* of the
-    changed function; both edge kinds are exercised by this one example.
+    resolves: `api.services.analysis.create_analysis_run`, in
+    `apps/api/src/api/services/analysis.py` (a bare call to the
+    directly-imported name). It used to be
+    `api.services.branch_index.trigger_index_build`, removed together with
+    the manual `POST /repos/index` endpoint.
 
 **Honest limitations of this test:** it exercises exactly one real function
 in one real repository shape (a thin FastAPI service layer) with one
-resolved caller and one resolved-import-but-unresolved-call importer. It is
+resolved caller. It is
 not a statement about recall or precision in general - there is no
 ground-truth dataset in this track to measure that against (see
 `IMPLEMENTATION_PLAN.md`'s Stage 6 section for the scope adaptation this
@@ -44,8 +36,7 @@ from revu.context.bundle import RetrievalConfig, build_context_bundle
 from revu.index.graph import IndexResult
 
 CHANGED_FILE = "apps/api/src/api/services/repositories.py"
-CALLER_FILE = "apps/api/src/api/services/branch_index.py"
-IMPORTER_ONLY_FILE = "apps/api/src/api/services/analysis.py"
+CALLER_FILE = "apps/api/src/api/services/analysis.py"
 
 # A real diff against `get_or_create_repository`'s actual body (lines 30-42
 # of the real file at the time this test was written - the context lines
@@ -83,7 +74,7 @@ def test_bundle_includes_the_real_resolved_caller_file(
     file_paths = {item.file_path for item in bundle.items}
     assert CHANGED_FILE in file_paths, "the changed function's own file must be in its own bundle"
     assert CALLER_FILE in file_paths, (
-        "trigger_index_build's real, resolved call to get_or_create_repository "
+        "create_analysis_run's real, resolved call to get_or_create_repository "
         "must surface as 1-hop context"
     )
 

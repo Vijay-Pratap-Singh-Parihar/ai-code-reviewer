@@ -19,28 +19,33 @@ from revu.verify import VerificationReport, VerificationResult
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from worker.jobs import analyze
+from worker.storage import TenantStorage
+
+
+async def _make_repo(session: AsyncSession, *, name: str = "acme/widgets") -> Repository:
+    org = Organization(name=f"Org for {name}")
+    session.add(org)
+    await session.flush()
+    repo = Repository(org_id=org.id, full_name=name)
+    session.add(repo)
+    await session.flush()
+    return repo
 
 
 async def _make_run(
     session: AsyncSession,
     *,
+    repo: Repository | None = None,
     model: str = "fake-model",
     agent: str = "diff_only",
     branch_index_id: uuid.UUID | None = None,
-) -> AnalysisRun:
-    org = Organization(name="Acme Inc")
-    session.add(org)
-    await session.flush()
-
-    repo = Repository(org_id=org.id, full_name="acme/widgets")
-    session.add(repo)
-    await session.flush()
-
+) -> tuple[AnalysisRun, Repository]:
+    repo = repo or await _make_repo(session)
     pr = PullRequest(
         repo_id=repo.id,
         number=1,
         title="Fix bug",
-        body="",
+        body="Fixes the loop bound.",
         author="dev@example.com",
         base_branch="main",
         head_sha="abc1234",
@@ -55,21 +60,16 @@ async def _make_run(
         branch_index_id=branch_index_id,
         config_snapshot={"agent": agent, "model": model},
         status=AnalysisRunStatus.QUEUED,
+        diff_text="diff text",
     )
     session.add(run)
     await session.flush()
-    return run
+    return run, repo
 
 
-async def _make_ready_branch_index(session: AsyncSession, *, graph_ref: str) -> BranchIndex:
-    org = Organization(name="Other Org")
-    session.add(org)
-    await session.flush()
-
-    repo = Repository(org_id=org.id, full_name="acme/other-widgets")
-    session.add(repo)
-    await session.flush()
-
+async def _make_ready_branch_index(
+    session: AsyncSession, *, repo: Repository, graph_ref: str
+) -> BranchIndex:
     branch_index = BranchIndex(
         repo_id=repo.id,
         branch_name="main",
@@ -86,10 +86,14 @@ async def _make_ready_branch_index(session: AsyncSession, *, graph_ref: str) -> 
     return branch_index
 
 
+def _graph_ref_in(storage: TenantStorage, repo: Repository) -> str:
+    return str(storage.index_dir(repo.org_id, repo.id) / "abc.graph.pkl.gz")
+
+
 async def test_analyze_pr_persists_findings_and_marks_succeeded(
     worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = await _make_run(worker_db_session)
+    run, _repo = await _make_run(worker_db_session)
 
     fake_result = RunResult(
         findings=[
@@ -116,7 +120,7 @@ async def test_analyze_pr_persists_findings_and_marks_succeeded(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id), "Fix bug", "", "diff text")
+    await analyze.analyze_pr(worker_ctx, str(run.id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.SUCCEEDED
@@ -125,9 +129,7 @@ async def test_analyze_pr_persists_findings_and_marks_succeeded(
     assert run.finished_at is not None
 
     findings = (
-        await worker_db_session.scalars(
-            select(FindingRecord).where(FindingRecord.run_id == run.id)
-        )
+        await worker_db_session.scalars(select(FindingRecord).where(FindingRecord.run_id == run.id))
     ).all()
     assert len(findings) == 1
     assert findings[0].file_path == "a.py"
@@ -136,17 +138,57 @@ async def test_analyze_pr_persists_findings_and_marks_succeeded(
     ]
 
 
+async def test_analyze_pr_reads_the_diff_and_pr_text_from_its_own_rows(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the run id crosses the queue; nothing else is taken on trust."""
+    run, _repo = await _make_run(worker_db_session)
+    captured: dict[str, object] = {}
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        captured.update(kwargs)
+        return RunResult()
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+
+    await analyze.analyze_pr(worker_ctx, str(run.id))
+
+    assert captured["diff"] == "diff text"
+    assert captured["pr_title"] == "Fix bug"
+    assert captured["pr_body"] == "Fixes the loop bound."
+
+
+async def test_analyze_pr_is_always_diff_only(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The manual path has no checkout, so even a run row claiming
+    `cross_file` is reviewed from the diff alone."""
+    run, _repo = await _make_run(worker_db_session, agent="cross_file")
+    called = False
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        nonlocal called
+        called = True
+        return RunResult()
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+
+    await analyze.analyze_pr(worker_ctx, str(run.id))
+
+    assert called is True
+
+
 async def test_analyze_pr_marks_failed_on_exception(
     worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = await _make_run(worker_db_session)
+    run, _repo = await _make_run(worker_db_session)
 
     async def raising_review_diff(**kwargs: object) -> RunResult:
         raise RuntimeError("provider unavailable")
 
     monkeypatch.setattr(analyze, "review_diff", raising_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id), "Fix bug", "", "diff text")
+    await analyze.analyze_pr(worker_ctx, str(run.id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.FAILED
@@ -157,7 +199,7 @@ async def test_analyze_pr_marks_failed_on_exception(
 async def test_analyze_pr_uses_model_from_config_snapshot(
     worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = await _make_run(worker_db_session, model="claude-haiku-4-5")
+    run, _repo = await _make_run(worker_db_session, model="claude-haiku-4-5")
     captured: dict[str, object] = {}
 
     async def fake_review_diff(**kwargs: object) -> RunResult:
@@ -166,7 +208,7 @@ async def test_analyze_pr_uses_model_from_config_snapshot(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id), "t", "b", "d")
+    await analyze.analyze_pr(worker_ctx, str(run.id))
 
     assert captured["model"] == "claude-haiku-4-5"
 
@@ -184,48 +226,69 @@ async def test_analyze_pr_returns_early_when_run_missing(
     monkeypatch.setattr(analyze, "review_diff", should_not_be_called)
 
     # Must not raise even though the run doesn't exist.
-    await analyze.analyze_pr(worker_ctx, str(uuid.uuid4()), "t", "b", "d")
+    await analyze.analyze_pr(worker_ctx, str(uuid.uuid4()))
 
     assert called is False
 
 
-async def test_analyze_pr_cross_file_loads_graph_and_runs_through_verifier(
-    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+async def test_cross_file_review_loads_graph_and_runs_through_verifier(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The `agent="cross_file"` path must: load the graph off the run's own
-    `branch_index_id` (set by `api.services.analysis.create_analysis_run`),
-    call `review_cross_file` with it, then run the raw findings through
-    Stage 8's `verify_findings` before persisting — a tool-calling agent's
-    self-cited evidence is exactly what that verifier exists to catch.
+    `branch_index_id`, call `review_cross_file` with it, then run the raw
+    findings through Stage 8's `verify_findings` before persisting — a
+    tool-calling agent's self-cited evidence is exactly what that verifier
+    exists to catch.
     """
+    repo = await _make_repo(worker_db_session)
     branch_index = await _make_ready_branch_index(
-        worker_db_session, graph_ref="/blobs/does-not-need-to-exist.graph.pkl.gz"
+        worker_db_session, repo=repo, graph_ref=_graph_ref_in(tenant_storage, repo)
     )
-    run = await _make_run(
-        worker_db_session, agent="cross_file", branch_index_id=branch_index.id
+    run, _ = await _make_run(
+        worker_db_session, repo=repo, agent="cross_file", branch_index_id=branch_index.id
     )
 
     raw_finding = Finding(
-        file_path="a.py", line_start=1, line_end=2, category=FindingCategory.CORRECTNESS,
-        severity=Severity.HIGH, message="fabricated citation",
+        file_path="a.py",
+        line_start=1,
+        line_end=2,
+        category=FindingCategory.CORRECTNESS,
+        severity=Severity.HIGH,
+        message="fabricated citation",
         evidence=[EvidenceItem(file_path="a.py", line_start=1, line_end=2, reason="tool call")],
-        confidence=0.9, agent_name="cross_file",
+        confidence=0.9,
+        agent_name="cross_file",
     )
     cross_file_result = RunResult(
-        findings=[raw_finding], tokens_in=300, tokens_out=100, cost_usd=0.01, latency_ms=456,
+        findings=[raw_finding],
+        tokens_in=300,
+        tokens_out=100,
+        cost_usd=0.01,
+        latency_ms=456,
     )
     verified_finding = raw_finding.model_copy(update={"confidence": 0.6})
     verification_result = VerificationResult(
         findings=[verified_finding],
         report=VerificationReport(
-            findings_in=1, findings_after_dedup=1, merged_count=0, evidence_drop_rate=0.0,
-            evidence_dropped_count=0, dropped_below_threshold=0, cut_by_cap=0, findings_out=1,
+            findings_in=1,
+            findings_after_dedup=1,
+            merged_count=0,
+            evidence_drop_rate=0.0,
+            evidence_dropped_count=0,
+            dropped_below_threshold=0,
+            cut_by_cap=0,
+            findings_out=1,
         ),
     )
 
     captured_review_kwargs: dict[str, object] = {}
     captured_verify_kwargs: dict[str, object] = {}
+    captured_load: dict[str, object] = {}
     fake_graph = rx.PyDiGraph()
+
+    def fake_load_graph(path: Path, *, signing_key: bytes) -> rx.PyDiGraph:
+        captured_load.update(path=path, signing_key=signing_key)
+        return fake_graph
 
     async def fake_review_cross_file(**kwargs: object) -> RunResult:
         captured_review_kwargs.update(kwargs)
@@ -236,14 +299,23 @@ async def test_analyze_pr_cross_file_loads_graph_and_runs_through_verifier(
         captured_verify_kwargs.update(kwargs)
         return verification_result
 
-    monkeypatch.setattr(analyze, "load_graph", lambda path: fake_graph)
+    monkeypatch.setattr(analyze, "load_graph", fake_load_graph)
     monkeypatch.setattr(analyze, "review_cross_file", fake_review_cross_file)
     monkeypatch.setattr(analyze, "verify_findings", fake_verify_findings)
 
-    await analyze.analyze_pr(
-        worker_ctx, str(run.id), "t", "b", "d", "cross_file", "/tmp/acme-widgets"
+    await analyze.execute_review(
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path="/tmp/acme-widgets",
+        storage=tenant_storage,
     )
 
+    assert captured_load["signing_key"] == tenant_storage.signing_key
     assert captured_review_kwargs["graph"] is fake_graph
     assert captured_review_kwargs["repo_root"] == Path("/tmp/acme-widgets")
     assert captured_verify_kwargs["findings"] == [raw_finding]
@@ -256,34 +328,110 @@ async def test_analyze_pr_cross_file_loads_graph_and_runs_through_verifier(
     assert run.config_snapshot["verification"]["findings_out"] == 1
 
     findings = (
-        await worker_db_session.scalars(
-            select(FindingRecord).where(FindingRecord.run_id == run.id)
-        )
+        await worker_db_session.scalars(select(FindingRecord).where(FindingRecord.run_id == run.id))
     ).all()
     assert len(findings) == 1
     # confidence is a Numeric column (Decimal); the verifier's score, not the raw one.
     assert float(findings[0].confidence) == pytest.approx(0.6)
 
 
-async def test_analyze_pr_cross_file_without_repo_path_fails(
-    worker_db_session: AsyncSession, worker_ctx: dict[str, object]
+async def test_cross_file_review_refuses_another_repositorys_index(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = await _make_run(worker_db_session, agent="cross_file")
+    """Regression: a run pointing at a branch index from another tenant's
+    repository must fail, never review against that tenant's code graph."""
+    other_repo = await _make_repo(worker_db_session, name="other/secret")
+    foreign_index = await _make_ready_branch_index(
+        worker_db_session, repo=other_repo, graph_ref=_graph_ref_in(tenant_storage, other_repo)
+    )
+    run, repo = await _make_run(
+        worker_db_session, agent="cross_file", branch_index_id=foreign_index.id
+    )
+    monkeypatch.setattr(analyze, "load_graph", pytest.fail)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id), "t", "b", "d", "cross_file", None)
+    await analyze.execute_review(
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path="/tmp/acme-widgets",
+        storage=tenant_storage,
+    )
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.FAILED
-    assert "repo_path" in (run.error or "")
+    assert "different repository" in (run.error or "")
 
 
-async def test_analyze_pr_cross_file_without_branch_index_id_fails(
-    worker_db_session: AsyncSession, worker_ctx: dict[str, object]
+async def test_cross_file_review_refuses_a_graph_outside_the_repos_index_dir(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run = await _make_run(worker_db_session, agent="cross_file", branch_index_id=None)
+    repo = await _make_repo(worker_db_session)
+    stray = await _make_ready_branch_index(
+        worker_db_session, repo=repo, graph_ref="/data/index/other-org/x.graph.pkl.gz"
+    )
+    run, _ = await _make_run(
+        worker_db_session, repo=repo, agent="cross_file", branch_index_id=stray.id
+    )
+    monkeypatch.setattr(analyze, "load_graph", pytest.fail)
 
-    await analyze.analyze_pr(
-        worker_ctx, str(run.id), "t", "b", "d", "cross_file", "/tmp/acme-widgets"
+    await analyze.execute_review(
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path="/tmp/acme-widgets",
+        storage=tenant_storage,
+    )
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "outside the index directory" in (run.error or "")
+
+
+async def test_cross_file_review_without_a_checkout_fails(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage
+) -> None:
+    run, repo = await _make_run(worker_db_session, agent="cross_file")
+
+    await analyze.execute_review(
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path=None,
+        storage=tenant_storage,
+    )
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "checkout" in (run.error or "")
+
+
+async def test_cross_file_review_without_branch_index_id_fails(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage
+) -> None:
+    run, repo = await _make_run(worker_db_session, agent="cross_file", branch_index_id=None)
+
+    await analyze.execute_review(
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path="/tmp/acme-widgets",
+        storage=tenant_storage,
     )
 
     await worker_db_session.refresh(run)

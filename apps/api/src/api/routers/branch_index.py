@@ -6,16 +6,10 @@ from db.branch_index import IndexUpdateLog
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.core.deps import CurrentUser, RedisPool
+from api.core.deps import CurrentUser
 from api.db.session import get_db
-from api.schemas.branch_index import (
-    BranchIndexPublic,
-    BranchIndexStatusPublic,
-    IndexTriggerRequest,
-    IndexUpdateLogPublic,
-)
+from api.schemas.branch_index import BranchIndexStatusPublic, IndexUpdateLogPublic
 from api.services import branch_index as branch_index_service
-from api.services.analysis import RepositoryOwnedByAnotherOrgError
 from api.services.branch_index import CurrentIndexView
 
 router = APIRouter(prefix="/repos", tags=["branch-index"])
@@ -48,32 +42,6 @@ def _to_status_public(
         last_update=recent_public[0] if recent_public else None,
         recent_updates=recent_public,
     )
-
-
-@router.post("/index", response_model=BranchIndexPublic, status_code=status.HTTP_202_ACCEPTED)
-async def trigger_index(
-    body: IndexTriggerRequest,
-    user: CurrentUser,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    redis: RedisPool,
-) -> BranchIndexPublic:
-    try:
-        row = await branch_index_service.trigger_index_build(db, user=user, body=body)
-    except RepositoryOwnedByAnotherOrgError as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"repository '{body.repo_full_name}' is already registered under a different "
-            "organization",
-        ) from exc
-
-    await redis.enqueue_job(
-        "update_branch_index",
-        str(row.id),
-        body.repo_path,
-        body.target_sha,
-        body.force_full,
-    )
-    return BranchIndexPublic.model_validate(row)
 
 
 @router.get("/{repo_id}/branches/{branch_name}/index", response_model=BranchIndexStatusPublic)

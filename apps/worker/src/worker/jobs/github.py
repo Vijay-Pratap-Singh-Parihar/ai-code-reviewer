@@ -1,9 +1,8 @@
 """ARQ jobs for GitHub-connected repositories.
 
-Unlike `analyze_pr` / `update_branch_index`, whose callers hand them a diff
-or a filesystem path, these jobs fetch what they need from GitHub with the
-repository's installation token: the PR diff over the REST API, and the
-code itself into the local repo cache (`worker.repo_cache`).
+These jobs fetch what they need from GitHub with the repository's own
+installation token: the PR diff over the REST API, and the code itself into
+that repository's cache directory (`worker.storage`, `worker.repo_cache`).
 """
 
 from __future__ import annotations
@@ -18,19 +17,21 @@ from typing import Any
 from db.branch_index import BranchIndex, BranchIndexStatus, IndexUpdateLog, IndexUpdateMode
 from db.pull_request import AnalysisRun, PullRequest
 from db.repository import Repository
-from revu.index.checkout import add_worktree, remove_worktree
+from revu.index.checkout import add_worktree, discard_worktree
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from worker import repo_cache
 from worker.github import installation_token, open_client, remote_url
 from worker.jobs.analyze import execute_review, mark_run_failed, mark_run_running
 from worker.jobs.index_branch import update_branch_index
+from worker.storage import storage_from_ctx
 
 logger = logging.getLogger(__name__)
 
 
 async def review_github_pr(ctx: dict[str, Any], run_id: str) -> None:
     session_factory = ctx["db_session_factory"]
+    storage = storage_from_ctx(ctx)
 
     async with session_factory() as session:
         run = await session.get(AnalysisRun, uuid.UUID(run_id))
@@ -54,8 +55,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str) -> None:
             checkout_from: Path | None = None
             if agent == "cross_file":
                 checkout_from = await repo_cache.fetch_refs(
-                    cache_root=Path(ctx["repo_cache_dir"]),
-                    full_name=repo.full_name,
+                    dest=storage.repo_cache_dir(repo.org_id, repo.id),
                     remote_url=remote_url(ctx, repo.full_name),
                     token=token,
                     refspecs=[repo_cache.pull_refspec(pr.number)],
@@ -79,8 +79,8 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str) -> None:
 
         if checkout_from is None:
             await execute_review(
-                session, run, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
-                agent=agent, repo_path=None,
+                session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
+                agent=agent, repo_path=None, storage=storage,
             )
             return
 
@@ -92,11 +92,11 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str) -> None:
             return
         try:
             await execute_review(
-                session, run, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
-                agent=agent, repo_path=str(worktree),
+                session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
+                agent=agent, repo_path=str(worktree), storage=storage,
             )
         finally:
-            await asyncio.to_thread(remove_worktree, checkout_from, worktree)
+            await asyncio.to_thread(discard_worktree, checkout_from, worktree)
 
 
 async def _fail_index_row(
@@ -123,9 +123,10 @@ async def _fail_index_row(
 async def sync_and_index_branch(
     ctx: dict[str, Any], branch_index_id: str, target_sha: str | None, force_full: bool
 ) -> None:
-    """Fetch the branch into the repo cache, then hand off to the same
-    `update_branch_index` job the manual path uses, now with a real path."""
+    """Fetch the branch into the repository's own cache directory, then
+    build the index from that checkout (`update_branch_index`)."""
     session_factory = ctx["db_session_factory"]
+    storage = storage_from_ctx(ctx)
 
     async with session_factory() as session:
         row = await session.get(BranchIndex, uuid.UUID(branch_index_id))
@@ -143,8 +144,7 @@ async def sync_and_index_branch(
             async with await open_client(ctx, session) as gh:
                 token = await installation_token(session, gh, repo)
             path = await repo_cache.fetch_refs(
-                cache_root=Path(ctx["repo_cache_dir"]),
-                full_name=repo.full_name,
+                dest=storage.repo_cache_dir(repo.org_id, repo.id),
                 remote_url=remote_url(ctx, repo.full_name),
                 token=token,
                 refspecs=[repo_cache.branch_refspec(row.branch_name)],

@@ -152,48 +152,32 @@ curl -s http://localhost:8000/analysis/$RUN_ID -H "Authorization: Bearer $TOKEN"
 repo, connectable to only one org's installation) — a second org posting the same
 `repo_full_name` gets `409 Conflict`, not a silently misattributed run.
 
-`agent` picks the reviewer: `"diff_only"` (default, no repository access needed, ~4x cheaper) or
-`"cross_file"` (Stage 7's tool-calling agent, verified through Stage 8's evidence checker before
-persisting — see IMPLEMENTATION_PLAN.md's "Pipeline wiring" section). `cross_file` requires a
-`repo_path` (a path on the **worker container's** filesystem, same convention as Stage 5's branch
-memory below) and an already-`ready` branch index for `(repo_full_name, base_branch)` built via
-`POST /repos/index` — there's no on-demand indexing fallback, so a missing index is a `409`, not a
-slow first request:
-
-```bash
-curl -s -X POST http://localhost:8000/analysis \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{"repo_full_name":"acme/widgets","head_sha":"abc1234","pr_number":1,
-       "pr_title":"Fix off-by-one","diff":"--- a/app.py\n+++ b/app.py\n...",
-       "agent":"cross_file","repo_path":"/tmp/acme-widgets"}'
-```
+A pasted diff is always reviewed `diff_only` (no repository access needed). The deeper
+`cross_file` review (Stage 7's tool-calling agent, verified through Stage 8's evidence checker)
+reads the repository, so it is only available for GitHub-connected repos, where the worker owns
+the checkout: `POST /repos/{id}/pulls/{number}/analysis` with `{"agent": "cross_file"}` (see
+"Connecting GitHub (Stage 10)"). `POST /analysis` used to accept a `repo_path` on the worker's
+filesystem for this; it was removed because it let any user point the worker at any directory,
+including another tenant's clone. Unknown fields such as `repo_path` are now rejected with `422`.
 
 ## Branch memory (Stage 5)
 
-`BranchIndex`/`IndexUpdateLog` now have a real row lifecycle, wired end to end: trigger a build via
-the API, the worker does the actual git/indexing work, results land in Postgres. The endpoint below
-is the manual path: the caller supplies a filesystem path to a git repository the **worker process**
-can read. For GitHub-connected repos, `POST /repos/{id}/index` fetches the code itself, and a push to
-the default branch keeps the index fresh (see "Connecting GitHub (Stage 10)").
+`BranchIndex`/`IndexUpdateLog` have a real row lifecycle, wired end to end: trigger a build via
+the API, the worker fetches the branch into the repository's own cache directory and does the
+git/indexing work, results land in Postgres. Builds are for GitHub-connected repos:
+`POST /repos/{id}/index`, and a push to the default branch keeps the index fresh (see "Connecting
+GitHub (Stage 10)"). The Stage 5 manual endpoint, `POST /repos/index` with a caller-supplied
+`repo_path`, was removed for the same reason as `POST /analysis`'s `repo_path`.
 
 ```bash
-TOKEN=$(curl -s -X POST http://localhost:8000/auth/signup \
-  -H "Content-Type: application/json" \
-  -d '{"org_name":"Acme Inc","email":"me@example.com","password":"correct-horse-battery"}' \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# repo_path must exist on the *worker container's* filesystem, not the host's —
-# see VERIFICATION.md's Stage 5 section for how to set up a throwaway repo there.
-TRIGGER=$(curl -s -X POST http://localhost:8000/repos/index \
-  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-  -d '{"repo_full_name":"acme/widgets","branch_name":"main","repo_path":"/tmp/demo-repo"}')
-REPO_ID=$(echo "$TRIGGER" | python3 -c "import sys,json; print(json.load(sys.stdin)['repo_id'])")
+curl -s -X POST http://localhost:8000/repos/$REPO_ID/index \
+  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" -d '{"branch_name":"main"}'
 
 # Poll until the build finishes
 curl -s http://localhost:8000/repos/$REPO_ID/branches/main/index -H "Authorization: Bearer $TOKEN"
 ```
 
-A manual/forced full rebuild reuses the same trigger endpoint with `"force_full": true` — there's no
+A forced full rebuild reuses the same trigger endpoint with `"force_full": true` — there's no
 separate endpoint for it. The status endpoint never reflects a build that's still in progress: while
 one `BranchIndex` row is `building`, the previous `ready` row (or "no index yet" for a brand-new
 branch) is what's returned, with `is_stale: true` noting a newer attempt is underway. See
@@ -256,7 +240,7 @@ found the exact real caller and the exact runtime failure at confidence 0.98. To
 more agents: dedup near-duplicates, drop findings whose cited location(s) don't actually exist in
 the repository (the hallucination check), recompute confidence from agent agreement + evidence
 survival, then threshold and cap. Plain importable library, one entry point — wired into the live
-`agent="cross_file"` path of `POST /analysis` (see "Triggering an analysis" above); `diff_only`
+`agent="cross_file"` path of GitHub PR reviews (see "Connecting GitHub (Stage 10)"); `diff_only`
 findings skip it since that path has no repository access to check citations against:
 
 ```python
@@ -312,9 +296,8 @@ npm run test:e2e # Playwright, real browser — see "Manual and automated UI tes
 npm run build   # production build; also what `docker compose build web` runs
 ```
 
-The dashboard's **Advanced → "Trigger a review"** form picks `agent: diff_only | cross_file` per the same
-cost/depth choice `POST /analysis` exposes — **submitting it against a real backend makes a real,
-billed LLM call**, the same as `curl`-ing the endpoint directly, so don't trigger it against a
+The dashboard's **Advanced → "Trigger a review"** form reviews a pasted diff (`diff_only`, the same as
+`POST /analysis`) — **submitting it against a real backend makes a real, billed LLM call**, the same as `curl`-ing the endpoint directly, so don't trigger it against a
 real API key without meaning to. Click into any triggered run to see the PR analysis view
 (`/runs/[runId]`). The diff and PR details come from the API (stored with the run since Stage 10),
 so the page works in any tab or after a reload. Runs created before Stage 10 fall back to what the

@@ -1,9 +1,10 @@
-"""ARQ job: build or update one `BranchIndex` row, end to end.
+"""Build or update one `BranchIndex` row, end to end.
 
-This is Stage 5's version of `worker.jobs.analyze.analyze_pr` — enqueued by
-`POST /repos/index`, it does the actual git/indexing work that the API layer
-can't (it needs a filesystem `repo_path` the worker process can read; see
-`api.schemas.branch_index.IndexTriggerRequest`).
+Called by `worker.jobs.github.sync_and_index_branch` once it has fetched the
+branch into the repository's own cache directory. It is not an ARQ job of
+its own: it used to be, with a caller-supplied `repo_path`, which let a
+request point the worker at any directory. Blobs are written to the
+repository's own index directory (`worker.storage.TenantStorage`) and signed.
 
 State machine (see `db.branch_index.BranchIndex`'s docstring for the full
 design rationale):
@@ -53,6 +54,8 @@ from revu.index.store import (
 )
 from sqlalchemy import select
 
+from worker.storage import storage_from_ctx
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,6 +67,8 @@ def _decide_and_build(
     target_sha: str,
     previous: BranchIndex | None,
     force_full: bool,
+    storage_dir: Path,
+    signing_key: bytes,
 ) -> tuple[IndexUpdateMode, str | None, IndexResult, int]:
     """Pure (no DB, no ARQ) decision + build. Returns (mode, reason,
     index_result, files_changed). Kept synchronous and DB-free so it can run
@@ -111,10 +116,13 @@ def _decide_and_build(
 
     try:
         previous_path = index_result_path(
-            repo_identifier=repo_identifier, branch_name=branch_name, head_sha=previous.head_sha
+            repo_identifier=repo_identifier,
+            branch_name=branch_name,
+            head_sha=previous.head_sha,
+            storage_dir=storage_dir,
         )
-        previous_result = load_index_result(previous_path)
-    except (OSError, TypeError) as exc:
+        previous_result = load_index_result(previous_path, signing_key=signing_key)
+    except (OSError, TypeError, ValueError) as exc:
         result = build_index(repo_path, target_sha)
         return (
             IndexUpdateMode.FULL,
@@ -135,13 +143,29 @@ def _decide_and_build(
 
 
 def _persist_index_result(
-    result: IndexResult, *, repo_identifier: str, branch_name: str, head_sha: str
+    result: IndexResult,
+    *,
+    repo_identifier: str,
+    branch_name: str,
+    head_sha: str,
+    storage_dir: Path,
+    signing_key: bytes,
 ) -> str:
     graph_path = save_graph(
-        result.graph, repo_identifier=repo_identifier, branch_name=branch_name, head_sha=head_sha
+        result.graph,
+        repo_identifier=repo_identifier,
+        branch_name=branch_name,
+        head_sha=head_sha,
+        storage_dir=storage_dir,
+        signing_key=signing_key,
     )
     save_index_result(
-        result, repo_identifier=repo_identifier, branch_name=branch_name, head_sha=head_sha
+        result,
+        repo_identifier=repo_identifier,
+        branch_name=branch_name,
+        head_sha=head_sha,
+        storage_dir=storage_dir,
+        signing_key=signing_key,
     )
     return str(graph_path)
 
@@ -154,6 +178,7 @@ async def update_branch_index(
     force_full: bool,
 ) -> None:
     session_factory = ctx["db_session_factory"]
+    storage = storage_from_ctx(ctx)
 
     async with session_factory() as session:
         row = await session.get(BranchIndex, uuid.UUID(branch_index_id))
@@ -169,7 +194,10 @@ async def update_branch_index(
             await session.commit()
             return
 
-        repo_identifier = repo.full_name
+        # The repo's UUID, not its name: stable across renames, and two orgs
+        # connecting the same GitHub repo must never share blobs.
+        repo_identifier = str(repo.id)
+        storage_dir = storage.index_dir(repo.org_id, repo.id)
         branch_name = row.branch_name
         path = Path(repo_path)
 
@@ -224,6 +252,8 @@ async def update_branch_index(
                 target_sha=target_sha,
                 previous=previous,
                 force_full=force_full,
+                storage_dir=storage_dir,
+                signing_key=storage.signing_key,
             )
         except Exception as exc:
             logger.exception("update_branch_index: build failed for %s", branch_index_id)
@@ -250,6 +280,8 @@ async def update_branch_index(
             repo_identifier=repo_identifier,
             branch_name=branch_name,
             head_sha=target_sha,
+            storage_dir=storage_dir,
+            signing_key=storage.signing_key,
         )
 
         fields = to_branch_index_fields(
