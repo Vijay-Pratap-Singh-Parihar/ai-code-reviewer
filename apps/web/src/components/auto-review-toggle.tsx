@@ -9,7 +9,16 @@ import { Switch } from "@/components/ui/switch";
  * or pushed to. Off by default (server-side default too): every review is a
  * billed LLM call, so nothing is spent until a person turns this on.
  */
-export function AutoReviewToggle({ repo, showHint = false }: { repo: RepositoryPublic; showHint?: boolean }) {
+export function AutoReviewToggle({
+  repo,
+  showHint = false,
+  canEdit = true,
+}: {
+  repo: RepositoryPublic;
+  showHint?: boolean;
+  // Repository settings are an owner/admin decision (the API enforces it too).
+  canEdit?: boolean;
+}) {
   const queryClient = useQueryClient();
   const mutation = useMutation({
     mutationFn: (enabled: boolean) => updateRepository(repo.id, { auto_review_enabled: enabled }),
@@ -28,11 +37,14 @@ export function AutoReviewToggle({ repo, showHint = false }: { repo: RepositoryP
         <Switch
           aria-label={`Auto-review ${repo.full_name}`}
           checked={checked}
-          disabled={mutation.isPending || !repo.connected}
+          disabled={mutation.isPending || !repo.connected || !canEdit}
           onCheckedChange={(value) => mutation.mutate(value)}
         />
         <span className="text-sm">Auto-review</span>
       </div>
+      {!canEdit && (
+        <p className="text-xs text-muted-foreground">Only owners and admins can change this.</p>
+      )}
       {showHint && (
         <p className="text-xs text-muted-foreground">
           {checked

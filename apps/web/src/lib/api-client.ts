@@ -2,11 +2,15 @@ import { getAuthState, setAuthState } from "@/lib/auth-store";
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
+export type UserRole = "owner" | "admin" | "member";
+
 export type UserPublic = {
   id: string;
   org_id: string;
   email: string;
-  role: string;
+  role: UserRole | string;
+  // Deployment operator: the only role that may create the GitHub App.
+  is_platform_admin?: boolean;
 };
 
 export type AccessTokenResponse = {
@@ -275,6 +279,8 @@ export function completeAppManifest(body: { code: string; state: string }): Prom
   });
 }
 
+export type ConnectionStatus = "active" | "suspended" | "uninstalled";
+
 export type InstallationPublic = {
   id: string;
   installation_id: number;
@@ -282,6 +288,13 @@ export type InstallationPublic = {
   account_type: string;
   installed_at: string;
   repository_count: number;
+  status?: ConnectionStatus;
+  suspended_at?: string | null;
+  uninstalled_at?: string | null;
+  // Disconnected repositories under this connection waiting for the
+  // retention job, and when the earliest of them is deleted.
+  disconnected_repository_count?: number;
+  purge_after?: string | null;
 };
 
 export type RepositoryPublic = {
@@ -292,6 +305,10 @@ export type RepositoryPublic = {
   connected: boolean;
   auto_review_enabled: boolean;
   github_repo_id: number | null;
+  installation_id?: string | null;
+  disconnected_at?: string | null;
+  // When the retention job deletes this repository's data, if disconnected.
+  purge_after?: string | null;
 };
 
 export type PullRequestSummary = {
@@ -327,6 +344,43 @@ export function syncInstallation(id: string): Promise<InstallationPublic> {
 
 export function listRepositories(): Promise<RepositoryPublic[]> {
   return apiFetchJson<RepositoryPublic[]>("/repos");
+}
+
+/** Queue deletion of a disconnected (or never-connected) repository's data. */
+export function deleteRepositoryData(repoId: string): Promise<{ status: string }> {
+  return apiFetchJson<{ status: string }>(`/repos/${repoId}/data`, { method: "DELETE" });
+}
+
+/** Queue deletion of everything an uninstalled connection left behind. */
+export function deleteInstallationData(id: string): Promise<{ status: string }> {
+  return apiFetchJson<{ status: string }>(`/github/installations/${id}/data`, {
+    method: "DELETE",
+  });
+}
+
+export type AuditEntry = {
+  id: string;
+  at: string;
+  action: string;
+  target: string;
+  actor_id: string | null;
+  actor_email: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type AuditPage = { entries: AuditEntry[]; next_before: string | null };
+
+export function listAuditEntries(params: {
+  limit?: number;
+  before?: string | null;
+  action?: string | null;
+}): Promise<AuditPage> {
+  const query = new URLSearchParams();
+  if (params.limit) query.set("limit", String(params.limit));
+  if (params.before) query.set("before", params.before);
+  if (params.action) query.set("action", params.action);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return apiFetchJson<AuditPage>(`/audit${suffix}`);
 }
 
 export function updateRepository(

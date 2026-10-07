@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { setAuthState } from "@/lib/auth-store";
 
 let pathname = "/dashboard";
 
@@ -65,5 +66,27 @@ describe("AppSidebar", () => {
       expect(button).toHaveAttribute("data-trigger-disabled");
     }
     expect(screen.getAllByText("Soon")).toHaveLength(4);
+  });
+
+  it("shows the audit log to owners and admins only", () => {
+    pathname = "/audit";
+    setAuthState({
+      accessToken: "t",
+      status: "authenticated",
+      user: { id: "u", org_id: "o", email: "a@b.c", role: "owner" },
+    });
+    const { unmount } = renderSidebar();
+    expect(screen.getByRole("link", { name: /audit log/i })).toHaveAttribute("href", "/audit");
+    expect(screen.getByRole("link", { name: /audit log/i })).toHaveAttribute("data-active");
+    unmount();
+
+    setAuthState({
+      accessToken: "t",
+      status: "authenticated",
+      user: { id: "u", org_id: "o", email: "a@b.c", role: "member" },
+    });
+    renderSidebar();
+    expect(screen.queryByRole("link", { name: /audit log/i })).not.toBeInTheDocument();
+    setAuthState({ accessToken: null, user: null, status: "unauthenticated" });
   });
 });

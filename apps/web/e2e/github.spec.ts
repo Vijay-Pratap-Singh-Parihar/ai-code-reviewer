@@ -60,9 +60,10 @@ test("sign up, then GitHub/Repositories screens and the collapsed manual form", 
 
   await page.getByRole("link", { name: "GitHub", exact: true }).click();
   await expect(page).toHaveURL(/\/github$/);
-  // No App yet → one-click creation; App already set up → install link.
+  // App already set up → install link. No App yet → this new owner isn't a
+  // platform admin, so they're told to ask one rather than offered creation.
   await expect(
-    page.getByRole("button", { name: "Create GitHub App" }).or(page.getByRole("link", { name: "Connect GitHub" })),
+    page.getByRole("link", { name: "Connect GitHub" }).or(page.getByText("GitHub isn't set up yet")),
   ).toBeVisible();
 });
 
