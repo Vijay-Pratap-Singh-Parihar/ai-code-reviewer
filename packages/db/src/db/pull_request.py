@@ -4,13 +4,21 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from revu.models import FindingCategory, Severity
-from sqlalchemy import ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import (
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db._enum import pg_enum
 from db.base import Base
-from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
+from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin, inherited_org_id
 
 if TYPE_CHECKING:
     from db.repository import Repository
@@ -39,11 +47,19 @@ class PullRequest(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "pull_requests"
     # Webhook deliveries for the same PR can race; the constraint makes the
     # upsert in api.services.github safe rather than relying on a pre-check.
-    __table_args__ = (UniqueConstraint("repo_id", "number", name="uq_pull_requests_repo_number"),)
-
-    repo_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    __table_args__ = (
+        UniqueConstraint("repo_id", "number", name="uq_pull_requests_repo_number"),
+        UniqueConstraint("id", "org_id", name="uq_pull_requests_id_org"),
+        ForeignKeyConstraint(
+            ["repo_id", "org_id"],
+            ["repositories.id", "repositories.org_id"],
+            ondelete="CASCADE",
+            name="fk_pull_requests_repo_org",
+        ),
     )
+
+    org_id: Mapped[uuid.UUID] = inherited_org_id()
+    repo_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     number: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     body: Mapped[str | None] = mapped_column(Text)
@@ -65,10 +81,18 @@ class PullRequest(UUIDPrimaryKeyMixin, Base):
 
 class AnalysisRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "analysis_runs"
-
-    pr_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("pull_requests.id", ondelete="CASCADE"), nullable=False
+    __table_args__ = (
+        UniqueConstraint("id", "org_id", name="uq_analysis_runs_id_org"),
+        ForeignKeyConstraint(
+            ["pr_id", "org_id"],
+            ["pull_requests.id", "pull_requests.org_id"],
+            ondelete="CASCADE",
+            name="fk_analysis_runs_pr_org",
+        ),
     )
+
+    org_id: Mapped[uuid.UUID] = inherited_org_id()
+    pr_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     branch_index_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("branch_index.id", ondelete="SET NULL")
     )
@@ -104,10 +128,17 @@ class FindingRecord(UUIDPrimaryKeyMixin, Base):
     """Persisted form of one `revu.models.Finding` produced by an analysis run."""
 
     __tablename__ = "findings"
-
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "org_id"],
+            ["analysis_runs.id", "analysis_runs.org_id"],
+            ondelete="CASCADE",
+            name="fk_findings_run_org",
+        ),
     )
+
+    org_id: Mapped[uuid.UUID] = inherited_org_id()
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     file_path: Mapped[str] = mapped_column(String(1024), nullable=False)
     line_start: Mapped[int] = mapped_column(Integer, nullable=False)
     line_end: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -130,10 +161,17 @@ class ContextBundleRecord(UUIDPrimaryKeyMixin, Base):
     """Persisted form of `revu.models.ContextBundle` for one analysis run."""
 
     __tablename__ = "context_bundles"
-
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "org_id"],
+            ["analysis_runs.id", "analysis_runs.org_id"],
+            ondelete="CASCADE",
+            name="fk_context_bundles_run_org",
+        ),
     )
+
+    org_id: Mapped[uuid.UUID] = inherited_org_id()
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     items_json: Mapped[list[dict[str, object]]] = mapped_column(
         JSONB, default=list, nullable=False
     )

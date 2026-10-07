@@ -2,13 +2,13 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, Integer, String
+from sqlalchemy import ForeignKeyConstraint, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db._enum import pg_enum
 from db.base import Base
-from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin
+from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin, inherited_org_id
 
 
 class BranchIndexStatus(enum.StrEnum):
@@ -50,11 +50,17 @@ class BranchIndex(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "branch_index"
     __table_args__ = (
         Index("ix_branch_index_repo_branch_created", "repo_id", "branch_name", "created_at"),
+        UniqueConstraint("id", "org_id", name="uq_branch_index_id_org"),
+        ForeignKeyConstraint(
+            ["repo_id", "org_id"],
+            ["repositories.id", "repositories.org_id"],
+            ondelete="CASCADE",
+            name="fk_branch_index_repo_org",
+        ),
     )
 
-    repo_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
-    )
+    org_id: Mapped[uuid.UUID] = inherited_org_id()
+    repo_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     branch_name: Mapped[str] = mapped_column(String(255), nullable=False)
     head_sha: Mapped[str | None] = mapped_column(String(40))
     node_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -83,10 +89,17 @@ class IndexUpdateLog(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     """
 
     __tablename__ = "index_update_log"
-
-    branch_index_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("branch_index.id", ondelete="CASCADE"), nullable=False
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["branch_index_id", "org_id"],
+            ["branch_index.id", "branch_index.org_id"],
+            ondelete="CASCADE",
+            name="fk_index_update_log_branch_index_org",
+        ),
     )
+
+    org_id: Mapped[uuid.UUID] = inherited_org_id()
+    branch_index_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     from_sha: Mapped[str | None] = mapped_column(String(40))
     to_sha: Mapped[str] = mapped_column(String(40), nullable=False)
     files_changed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

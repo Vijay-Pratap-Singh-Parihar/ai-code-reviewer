@@ -1,4 +1,3 @@
-import os
 from collections.abc import AsyncIterator, Iterator
 
 import db as _db_models  # noqa: F401  (registers all models on Base.metadata)
@@ -7,19 +6,18 @@ import pytest_asyncio
 from api.core.queue import get_redis_pool
 from api.db.session import get_db
 from api.main import app
-from db.base import Base
+from db.testing import (
+    TEST_APP_DATABASE_URL,
+    TEST_DATABASE_URL,
+    DatabaseUnavailable,
+    async_url,
+    prepare_test_database,
+)
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_test",
-)
-TEST_DATABASE_URL_ASYNC = TEST_DATABASE_URL.replace("+psycopg", "+asyncpg")
 
 
 class FakeRedisPool:
@@ -40,22 +38,22 @@ class FakeRedisPool:
 
 @pytest.fixture(scope="session")
 def db_engine() -> Iterator[Engine]:
-    """A sync engine against a dedicated test database, with all tables created.
+    """A sync engine, as the schema owner, against a test database built by
+    the real migrations (`db.testing`). The owner bypasses row-level
+    security; it backs the model-level tests only. `api_client` connects as
+    the application role, where RLS applies.
 
     Skips the whole session's DB-backed tests (rather than failing) when no
     Postgres is reachable, so `uv run pytest` still passes on a machine that
     hasn't started `docker compose up postgres` yet.
     """
-    engine = create_engine(TEST_DATABASE_URL)
     try:
-        with engine.connect():
-            pass
-    except OperationalError:
+        prepare_test_database()
+    except DatabaseUnavailable:
         pytest.skip(f"no Postgres reachable at {TEST_DATABASE_URL}; skipping DB-backed tests")
 
-    Base.metadata.create_all(engine)
+    engine = create_engine(TEST_DATABASE_URL)
     yield engine
-    Base.metadata.drop_all(engine)
     engine.dispose()
 
 
@@ -83,14 +81,16 @@ def db_session(db_engine: Engine) -> Iterator[Session]:
 async def api_client(db_engine: Engine) -> AsyncIterator[AsyncClient]:
     """An httpx client driving the real FastAPI app end to end (real routing,
     real Pydantic validation, real cookie handling) against the test
-    database. Everything the app does inside one HTTP call — including its
-    own `session.commit()` calls — runs inside one outer transaction that's
-    rolled back afterwards, via SQLAlchemy's `create_savepoint` join mode.
+    database, connected as `revu_app` exactly like production, so every
+    request runs under row-level security. Everything the app does inside
+    one HTTP call — including its own `session.commit()` calls — runs inside
+    one outer transaction that's rolled back afterwards, via SQLAlchemy's
+    `create_savepoint` join mode.
 
     Depending on `db_engine` (not just its side effect of creating tables)
     means the "no Postgres reachable" skip propagates here too.
     """
-    engine = create_async_engine(TEST_DATABASE_URL_ASYNC)
+    engine = create_async_engine(async_url(TEST_APP_DATABASE_URL))
     connection = await engine.connect()
     outer_transaction = await connection.begin()
     session_factory = async_sessionmaker(

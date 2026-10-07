@@ -14,6 +14,7 @@ from db.pull_request import (
     PullRequestState,
 )
 from db.repository import Repository
+from db.tenancy import bind_org
 from revu.models import EvidenceItem, Finding, FindingCategory, RunResult, Severity
 from revu.verify import VerificationReport, VerificationResult
 from sqlalchemy import select
@@ -26,6 +27,9 @@ async def _make_repo(session: AsyncSession, *, name: str = "acme/widgets") -> Re
     org = Organization(name=f"Org for {name}")
     session.add(org)
     await session.flush()
+    # Act for this organisation, as a job does for the one in its
+    # arguments: the session runs under row-level security.
+    await bind_org(session, org.id)
     repo = Repository(org_id=org.id, full_name=name)
     session.add(repo)
     await session.flush()
@@ -120,7 +124,7 @@ async def test_analyze_pr_persists_findings_and_marks_succeeded(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id))
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.SUCCEEDED
@@ -151,7 +155,7 @@ async def test_analyze_pr_reads_the_diff_and_pr_text_from_its_own_rows(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id))
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
 
     assert captured["diff"] == "diff text"
     assert captured["pr_title"] == "Fix bug"
@@ -173,7 +177,7 @@ async def test_analyze_pr_is_always_diff_only(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id))
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
 
     assert called is True
 
@@ -188,7 +192,7 @@ async def test_analyze_pr_marks_failed_on_exception(
 
     monkeypatch.setattr(analyze, "review_diff", raising_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id))
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.FAILED
@@ -208,7 +212,7 @@ async def test_analyze_pr_uses_model_from_config_snapshot(
 
     monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
 
-    await analyze.analyze_pr(worker_ctx, str(run.id))
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
 
     assert captured["model"] == "claude-haiku-4-5"
 
@@ -226,7 +230,7 @@ async def test_analyze_pr_returns_early_when_run_missing(
     monkeypatch.setattr(analyze, "review_diff", should_not_be_called)
 
     # Must not raise even though the run doesn't exist.
-    await analyze.analyze_pr(worker_ctx, str(uuid.uuid4()))
+    await analyze.analyze_pr(worker_ctx, str(uuid.uuid4()), str(uuid.uuid4()))
 
     assert called is False
 

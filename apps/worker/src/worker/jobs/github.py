@@ -17,6 +17,7 @@ from typing import Any
 from db.branch_index import BranchIndex, BranchIndexStatus, IndexUpdateLog, IndexUpdateMode
 from db.pull_request import AnalysisRun, PullRequest
 from db.repository import Repository
+from db.tenancy import bind_org
 from revu.index.checkout import add_worktree, discard_worktree
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,11 +30,12 @@ from worker.storage import storage_from_ctx
 logger = logging.getLogger(__name__)
 
 
-async def review_github_pr(ctx: dict[str, Any], run_id: str) -> None:
+async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> None:
     session_factory = ctx["db_session_factory"]
     storage = storage_from_ctx(ctx)
 
     async with session_factory() as session:
+        await bind_org(session, uuid.UUID(org_id))
         run = await session.get(AnalysisRun, uuid.UUID(run_id))
         if run is None:
             logger.error("review_github_pr: run %s no longer exists", run_id)
@@ -121,7 +123,11 @@ async def _fail_index_row(
 
 
 async def sync_and_index_branch(
-    ctx: dict[str, Any], branch_index_id: str, target_sha: str | None, force_full: bool
+    ctx: dict[str, Any],
+    branch_index_id: str,
+    org_id: str,
+    target_sha: str | None,
+    force_full: bool,
 ) -> None:
     """Fetch the branch into the repository's own cache directory, then
     build the index from that checkout (`update_branch_index`)."""
@@ -129,6 +135,7 @@ async def sync_and_index_branch(
     storage = storage_from_ctx(ctx)
 
     async with session_factory() as session:
+        await bind_org(session, uuid.UUID(org_id))
         row = await session.get(BranchIndex, uuid.UUID(branch_index_id))
         if row is None:
             logger.error("sync_and_index_branch: row %s no longer exists", branch_index_id)
@@ -159,4 +166,4 @@ async def sync_and_index_branch(
             )
             return
 
-    await update_branch_index(ctx, branch_index_id, str(path), sha, force_full)
+    await update_branch_index(ctx, branch_index_id, org_id, str(path), sha, force_full)

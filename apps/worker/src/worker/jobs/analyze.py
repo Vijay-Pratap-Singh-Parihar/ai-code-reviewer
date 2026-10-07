@@ -8,6 +8,7 @@ from typing import Any
 from db.branch_index import BranchIndex
 from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullRequest
 from db.repository import Repository
+from db.tenancy import bind_org
 from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
 from revu.index.store import load_graph
@@ -137,15 +138,19 @@ async def mark_run_failed(session: AsyncSession, run: AnalysisRun, exc: BaseExce
     await session.commit()
 
 
-async def analyze_pr(ctx: dict[str, Any], run_id: str) -> None:
+async def analyze_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> None:
     """The manual (diff-paste) trigger path from `POST /analysis`. Always
-    `diff_only`: it has no checkout to read. Only the run id crosses the
-    queue; the diff, title and body are read back from the run's own rows.
-    GitHub-connected repos use `worker.jobs.github.review_github_pr`.
+    `diff_only`: it has no checkout to read. Only the run id and its
+    organisation cross the queue; the session is bound to that organisation
+    (row-level security), and the diff, title and body are read back from
+    the run's own rows. A run id paired with the wrong organisation is
+    simply not found. GitHub-connected repos use
+    `worker.jobs.github.review_github_pr`.
     """
     session_factory = ctx["db_session_factory"]
 
     async with session_factory() as session:
+        await bind_org(session, uuid.UUID(org_id))
         run = await session.get(AnalysisRun, uuid.UUID(run_id))
         if run is None:
             logger.error("analyze_pr: run %s no longer exists", run_id)

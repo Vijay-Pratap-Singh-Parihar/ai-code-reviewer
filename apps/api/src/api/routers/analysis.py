@@ -42,18 +42,12 @@ async def trigger_analysis(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: RedisPool,
 ) -> AnalysisRunPublic:
-    try:
-        run = await analysis_service.create_analysis_run(db, user=user, body=body)
-    except analysis_service.RepositoryOwnedByAnotherOrgError as exc:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"repository '{body.repo_full_name}' is already registered under a different "
-            "organization",
-        ) from exc
+    run = await analysis_service.create_analysis_run(db, user=user, body=body)
 
-    # Only the run id crosses the queue: the worker reads the diff, title and
-    # body back from the rows this request just wrote, scoped by ownership.
-    await redis.enqueue_job("analyze_pr", str(run.id))
+    # Only the run id and its organisation cross the queue: the worker binds
+    # its session to that organisation and reads the diff, title and body
+    # back from the run's own rows, under row-level security.
+    await redis.enqueue_job("analyze_pr", str(run.id), str(run.org_id))
 
     # A run this endpoint just created has no findings yet by definition —
     # accessing `run.findings` here would trigger a lazy load outside an

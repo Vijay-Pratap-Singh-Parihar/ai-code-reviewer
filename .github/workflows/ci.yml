@@ -24,6 +24,9 @@ jobs:
           --health-retries 10
     env:
       TEST_DATABASE_URL: postgresql+psycopg://revu:revu_dev_password@localhost:5432/revu_test
+      # The migrations create this role; API/worker tests connect as it so
+      # row-level security applies exactly as in production.
+      TEST_APP_DATABASE_URL: postgresql+psycopg://revu_app:revu_app_dev_password@localhost:5432/revu_test
     steps:
       - uses: actions/checkout@v4
 

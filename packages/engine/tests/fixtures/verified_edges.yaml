@@ -12,19 +12,19 @@ edges:
   - caller: api.core.deps.get_current_user
     callee: api.core.security.decode_access_token
     file: apps/api/src/api/core/deps.py
-    line: 24
+    line: 25
     note: "get_current_user() calls decode_access_token(credentials.credentials) to validate the bearer token"
 
   - caller: api.routers.analysis.get_analysis
     callee: api.services.analysis.get_run_for_org
     file: apps/api/src/api/routers/analysis.py
-    line: 70
+    line: 64
     note: "GET /analysis/{run_id} handler delegates the org-scoped lookup to the service layer"
 
   - caller: api.routers.analysis.trigger_analysis
     callee: api.services.analysis.create_analysis_run
     file: apps/api/src/api/routers/analysis.py
-    line: 46
+    line: 45
     note: "POST /analysis handler creates the run via the service layer (imported as analysis_service alias)"
 
   - caller: api.routers.auth.logout
@@ -60,11 +60,11 @@ edges:
   - caller: worker.jobs.analyze.execute_review
     callee: revu.agents.diff_only.review_diff
     file: apps/worker/src/worker/jobs/analyze.py
-    line: 93
+    line: 94
     note: "the worker's shared review core (Stage 10 split it out of analyze_pr) calls the Stage 3 reviewer's review_diff() across the worker/engine package boundary"
 
   - caller: worker.jobs.analyze.execute_review
     callee: db.pull_request.FindingRecord
     file: apps/worker/src/worker/jobs/analyze.py
-    line: 108
+    line: 109
     note: "execute_review() constructs a FindingRecord() row per finding, across the worker/db package boundary"

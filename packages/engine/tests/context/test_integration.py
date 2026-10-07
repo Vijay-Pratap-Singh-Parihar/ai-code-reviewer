@@ -9,7 +9,7 @@ not by construction.
 **What was hand-verified (read directly from source before writing this
 test):**
   - `api.services.repositories.get_or_create_repository`
-    (`apps/api/src/api/services/repositories.py:30-42`) has exactly one
+    (`apps/api/src/api/services/repositories.py:17-29`) has exactly one
     caller anywhere in this repository whose call the Stage 4 indexer
     resolves: `api.services.analysis.create_analysis_run`, in
     `apps/api/src/api/services/analysis.py` (a bare call to the
@@ -38,25 +38,26 @@ from revu.index.graph import IndexResult
 CHANGED_FILE = "apps/api/src/api/services/repositories.py"
 CALLER_FILE = "apps/api/src/api/services/analysis.py"
 
-# A real diff against `get_or_create_repository`'s actual body (lines 30-42
+# A real diff against `get_or_create_repository`'s actual body (lines 17-29
 # of the real file at the time this test was written - the context lines
 # below are copied verbatim from the real source so this hunk's line numbers
 # are honest, not fabricated).
 _CHANGED_LINE = (
-    "+    repo = await session.scalar("
-    "select(Repository).where(Repository.full_name == full_name.strip()))"
+    "+        select(Repository).where("
+    "Repository.org_id == org_id, Repository.full_name == full_name.strip())"
 )
 
 DIFF_TEXT = f"""\
 diff --git a/{CHANGED_FILE} b/{CHANGED_FILE}
 --- a/{CHANGED_FILE}
 +++ b/{CHANGED_FILE}
-@@ -32,4 +32,4 @@ async def get_or_create_repository(
+@@ -19,5 +19,5 @@ async def get_or_create_repository(
  ) -> Repository:
--    repo = await session.scalar(select(Repository).where(Repository.full_name == full_name))
+     repo = await session.scalar(
+-        select(Repository).where(Repository.org_id == org_id, Repository.full_name == full_name)
 {_CHANGED_LINE}
+     )
      if repo is not None:
-         if repo.org_id != org_id:
 """
 
 

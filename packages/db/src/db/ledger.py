@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, Numeric, String, func
+from sqlalchemy import ForeignKey, ForeignKeyConstraint, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,13 +16,19 @@ class TokenUsageLedger(UUIDPrimaryKeyMixin, Base):
     """
 
     __tablename__ = "token_usage_ledger"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["run_id", "org_id"],
+            ["analysis_runs.id", "analysis_runs.org_id"],
+            ondelete="CASCADE",
+            name="fk_token_usage_ledger_run_org",
+        ),
+    )
 
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
-    run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("analysis_runs.id", ondelete="CASCADE"), nullable=False
-    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False)
     cost_usd: Mapped[float] = mapped_column(Numeric(10, 4), nullable=False)

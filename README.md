@@ -91,12 +91,44 @@ DATABASE_URL_SYNC="postgresql+psycopg://revu:revu_dev_password@localhost:5434/re
 Inside a container (or anything that resolves the `postgres` service name), no override is
 needed.
 
+## Tenant isolation (enforced by Postgres)
+
+Every organisation's data is kept apart by the database itself, not only by `WHERE` clauses:
+
+- Every tenant table (`repositories`, `pull_requests`, `analysis_runs`, `findings`,
+  `branch_index`, `github_installations`, `ai_providers`, ...: the list is
+  `db.tenancy.TENANT_TABLES`) carries `org_id` and a **row-level security** policy:
+  `org_id = revu_current_org()`, read from the transaction-local setting `app.current_org`.
+  A session bound to no organisation sees no tenant rows at all.
+- Child rows can't drift from their parent: foreign keys are composite, `(repo_id, org_id) ->
+  repositories(id, org_id)` and so on down the chain, and a trigger copies `org_id` from the
+  parent when an insert leaves it out.
+- The API, worker and webhook relay connect as **`revu_app`**: not a superuser, no BYPASSRLS, DML
+  only. Migrations run as the schema owner. Both services check this at startup and **refuse to
+  start in production** if their connection could bypass row-level security.
+- The API binds each request's session to the signed-in user's organisation
+  (`api.core.deps.get_current_user`). Worker jobs carry their organisation in their arguments
+  and bind to it, so a run id paired with the wrong organisation is simply not found.
+- Webhooks arrive before any organisation is known. They resolve it through the only
+  cross-organisation lookup the database exposes, `revu_installation_org(installation_id)`, a
+  `SECURITY DEFINER` function that returns that one mapping and nothing else.
+- Repositories are unique **per organisation**: two organisations connecting the same GitHub
+  repository get two fully separate copies (rows, clones, indexes, reviews).
+- On disk, each repository's clone and signed index blobs live under `<org_id>/<repo_id>/`.
+
+`apps/api/tests/test_tenant_isolation.py` proves it: it seeds two organisations, switches to
+`revu_app` and runs deliberately unfiltered queries, inserts and updates against every tenant
+table. A catalog test fails if a future table gains `org_id` without a policy.
+
 ## Tests that touch the database
 
 `apps/api/tests/test_models_db.py` runs real round-trip tests (enum storage, cascades, unique
-constraints) against Postgres rather than mocking the ORM. It looks for `TEST_DATABASE_URL`
-(default `postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_test`) and skips
-itself — not fails — if nothing is reachable there. One-time setup against the compose Postgres:
+constraints) against Postgres rather than mocking the ORM. The test database is rebuilt once per
+run by the **real Alembic migrations** (`db.testing.prepare_test_database`), so row-level
+security, the `revu_app` role and the triggers exist in tests exactly as in production; API and
+worker tests then connect as `revu_app` (`TEST_APP_DATABASE_URL`). It looks for
+`TEST_DATABASE_URL` (default `postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_test`)
+and skips DB-backed tests — not fails — if nothing is reachable there. One-time setup against the compose Postgres:
 
 ```bash
 docker exec ai-code-reviewer-postgres-1 psql -U revu -d revu -c "CREATE DATABASE revu_test"
@@ -148,9 +180,8 @@ RUN_ID=$(curl -s -X POST http://localhost:8000/analysis \
 curl -s http://localhost:8000/analysis/$RUN_ID -H "Authorization: Bearer $TOKEN"
 ```
 
-`repositories.full_name` is globally unique across the whole system (it models a real GitHub
-repo, connectable to only one org's installation) — a second org posting the same
-`repo_full_name` gets `409 Conflict`, not a silently misattributed run.
+Repository names are unique per organisation: a second organisation posting the same
+`repo_full_name` gets its own, isolated repository row and runs (see "Tenant isolation").
 
 A pasted diff is always reviewed `diff_only` (no repository access needed). The deeper
 `cross_file` review (Stage 7's tool-calling agent, verified through Stage 8's evidence checker)
