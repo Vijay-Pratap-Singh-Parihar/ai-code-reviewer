@@ -1,19 +1,22 @@
 import uuid
+from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     UniqueConstraint,
     false,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.base import Base
-from db.mixins import CreatedAtMixin, UUIDPrimaryKeyMixin, inherited_org_id
+from db.mixins import CreatedAtMixin, TZDateTime, UUIDPrimaryKeyMixin, inherited_org_id
 
 
 class Repository(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -30,6 +33,12 @@ class Repository(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         UniqueConstraint("org_id", "github_repo_id", name="uq_repositories_org_github_repo_id"),
         # Target of the composite (repo_id, org_id) foreign keys below.
         UniqueConstraint("id", "org_id", name="uq_repositories_id_org"),
+        # The retention job scans only disconnected repositories.
+        Index(
+            "ix_repositories_disconnected_at",
+            "disconnected_at",
+            postgresql_where=text("disconnected_at IS NOT NULL"),
+        ),
     )
 
     org_id: Mapped[uuid.UUID] = mapped_column(
@@ -51,6 +60,10 @@ class Repository(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
     config_json: Mapped[dict[str, object]] = mapped_column(JSONB, default=dict, nullable=False)
+    # When the repository stopped being reachable through its installation
+    # (removed from it, or the App uninstalled). Starts the retention clock;
+    # cleared if it is connected again before the purge.
+    disconnected_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
     tracked_branches: Mapped[list["TrackedBranch"]] = relationship(
         back_populates="repository", cascade="all, delete-orphan"

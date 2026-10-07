@@ -20,6 +20,7 @@ class UserPublic(BaseModel):
     org_id: uuid.UUID
     email: EmailStr
     role: UserRole
+    is_platform_admin: bool = False
 
     model_config = {"from_attributes": True}
 

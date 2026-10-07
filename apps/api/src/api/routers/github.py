@@ -3,7 +3,8 @@ import logging
 import uuid
 from typing import Annotated, Any
 
-from db.organization import GithubInstallation, UserRole
+from db.audit import AuditAction, record_audit
+from db.organization import GithubInstallation
 from db.repository import Repository
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from ghapp import (
@@ -17,7 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
-from api.core.deps import CurrentUser, RedisPool
+from api.core.deps import CurrentUser, OrgAdmin, PlatformAdmin, RedisPool
 from api.core.github import GitHub, ResolvedApp, resolve_app
 from api.db.session import get_db
 from api.schemas.github import (
@@ -31,6 +32,7 @@ from api.schemas.github import (
 )
 from api.services import github as github_service
 from api.services import github_app as github_app_service
+from api.services import lifecycle
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,14 @@ async def _to_public(db: AsyncSession, installation: GithubInstallation) -> Inst
         .select_from(Repository)
         .where(Repository.installation_id == installation.id, Repository.is_active.is_(True))
     )
+    disconnected_count, earliest_disconnect = (
+        await db.execute(
+            select(func.count(), func.min(Repository.disconnected_at)).where(
+                Repository.installation_id == installation.id,
+                Repository.disconnected_at.is_not(None),
+            )
+        )
+    ).one()
     return InstallationPublic(
         id=installation.id,
         installation_id=installation.installation_id,
@@ -52,6 +62,11 @@ async def _to_public(db: AsyncSession, installation: GithubInstallation) -> Inst
         account_type=installation.account_type,
         installed_at=installation.installed_at,
         repository_count=int(count or 0),
+        status=lifecycle.installation_status(installation),  # type: ignore[arg-type]
+        suspended_at=installation.suspended_at,
+        uninstalled_at=installation.uninstalled_at,
+        disconnected_repository_count=int(disconnected_count or 0),
+        purge_after=lifecycle.purge_after(earliest_disconnect),
     )
 
 
@@ -76,13 +91,6 @@ def _app_info(app: ResolvedApp | None, *, error: str | None = None) -> GitHubApp
     )
 
 
-def _require_admin(user: CurrentUser) -> None:
-    if user.role not in (UserRole.OWNER, UserRole.ADMIN):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "only an organization owner or admin can do this"
-        )
-
-
 @router.get("/app", response_model=GitHubAppInfo)
 async def get_app_info(_: CurrentUser, db: Db) -> GitHubAppInfo:
     try:
@@ -93,10 +101,10 @@ async def get_app_info(_: CurrentUser, db: Db) -> GitHubAppInfo:
 
 @router.post("/app/manifest", response_model=ManifestStartResponse)
 async def start_app_manifest(
-    body: ManifestStartRequest, user: CurrentUser, db: Db
+    body: ManifestStartRequest, user: PlatformAdmin, db: Db
 ) -> ManifestStartResponse:
-    """Step 1 of one-click App creation: what the browser should POST to GitHub."""
-    _require_admin(user)
+    """Step 1 of one-click App creation: what the browser should POST to
+    GitHub. Platform admins only: every organisation installs this App."""
     try:
         start = await github_app_service.start_manifest(
             db, user=user, organization=body.organization or None
@@ -114,11 +122,10 @@ async def start_app_manifest(
 
 @router.post("/app/conversions", response_model=GitHubAppInfo, status_code=status.HTTP_201_CREATED)
 async def complete_app_manifest(
-    body: ManifestCompleteRequest, user: CurrentUser, db: Db
+    body: ManifestCompleteRequest, user: PlatformAdmin, db: Db
 ) -> GitHubAppInfo:
     """Step 2: GitHub redirected back with a one-time code; trade it for the
     new App's credentials and store them encrypted."""
-    _require_admin(user)
     try:
         await github_app_service.complete_manifest(db, user=user, code=body.code, state=body.state)
     except github_app_service.InvalidManifestStateError as exc:
@@ -151,7 +158,12 @@ async def link_installation(
 ) -> InstallationPublic:
     try:
         installation = await github_service.link_installation(
-            db, gh, org_id=user.org_id, installation_id=body.installation_id, code=body.code
+            db,
+            gh,
+            org_id=user.org_id,
+            installation_id=body.installation_id,
+            code=body.code,
+            actor_id=user.id,
         )
     except github_service.InstallationNotAccessibleError as exc:
         raise HTTPException(
@@ -177,12 +189,49 @@ async def sync_installation(
     )
     if installation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "installation not found")
+    if installation.uninstalled_at is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "the GitHub App was uninstalled from this account"
+        )
     try:
         await github_service.resync_installation(db, gh, installation)
     except GitHubError as exc:
         raise _bad_gateway(exc) from exc
+    record_audit(
+        db,
+        org_id=installation.org_id,
+        actor_id=user.id,
+        action=AuditAction.INSTALLATION_SYNCED,
+        target=f"installation:{installation.account_login}",
+    )
     await db.commit()
     return await _to_public(db, installation)
+
+
+@router.delete("/installations/{installation_id}/data", status_code=status.HTTP_202_ACCEPTED)
+async def delete_installation_data(
+    installation_id: uuid.UUID, user: OrgAdmin, db: Db, redis: RedisPool
+) -> dict[str, str]:
+    """Delete everything kept for an uninstalled connection now, instead of
+    waiting for the retention period: its repositories with their reviews,
+    findings and indexes, their clones and index files, and the connection
+    itself. The audit log keeps the record that it happened."""
+    installation = await db.scalar(
+        select(GithubInstallation).where(
+            GithubInstallation.id == installation_id, GithubInstallation.org_id == user.org_id
+        )
+    )
+    if installation is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "installation not found")
+    try:
+        await lifecycle.request_installation_purge(db, redis, installation=installation, actor=user)
+    except lifecycle.StillConnectedError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "uninstall the GitHub App from this account first; otherwise GitHub would sync "
+            "the repositories straight back",
+        ) from exc
+    return {"status": "queued"}
 
 
 @router.post("/webhook", response_model=WebhookResponse)

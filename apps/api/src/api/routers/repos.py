@@ -5,6 +5,7 @@ index build without the caller supplying a diff or a filesystem path."""
 import uuid
 from typing import Annotated
 
+from db.audit import AuditAction, record_audit
 from db.branch_index import BranchIndex
 from db.organization import GithubInstallation
 from db.pull_request import AnalysisRun, PullRequest
@@ -14,7 +15,7 @@ from ghapp import GitHubError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.core.deps import CurrentUser, RedisPool
+from api.core.deps import CurrentUser, OrgAdmin, RedisPool
 from api.core.github import GitHub
 from api.db.session import get_db
 from api.schemas.analysis import AnalysisRunPublic
@@ -28,6 +29,7 @@ from api.schemas.github import (
     RepositoryUpdate,
 )
 from api.services import github as github_service
+from api.services import lifecycle
 from api.services.branch_index import get_current_branch_index
 from api.services.repositories import get_repository_for_org
 
@@ -42,9 +44,16 @@ def _to_public(repo: Repository) -> RepositoryPublic:
         full_name=repo.full_name,
         default_branch=repo.default_branch,
         is_active=repo.is_active,
-        connected=repo.installation_id is not None and repo.github_repo_id is not None,
+        connected=(
+            repo.installation_id is not None
+            and repo.github_repo_id is not None
+            and repo.disconnected_at is None
+        ),
         auto_review_enabled=repo.auto_review_enabled,
         github_repo_id=repo.github_repo_id,
+        installation_id=repo.installation_id,
+        disconnected_at=repo.disconnected_at,
+        purge_after=lifecycle.purge_after(repo.disconnected_at),
     )
 
 
@@ -81,12 +90,41 @@ async def list_repositories(user: CurrentUser, db: Db) -> list[RepositoryPublic]
 
 @router.patch("/{repo_id}", response_model=RepositoryPublic)
 async def update_repository(
-    repo_id: uuid.UUID, body: RepositoryUpdate, user: CurrentUser, db: Db
+    repo_id: uuid.UUID, body: RepositoryUpdate, user: OrgAdmin, db: Db
 ) -> RepositoryPublic:
+    """Repository settings change what runs (and what is billed) for the
+    whole organisation, so they are an owner/admin decision."""
     repo = await _require_repo(db, repo_id, user.org_id)
+    if repo.auto_review_enabled != body.auto_review_enabled:
+        record_audit(
+            db,
+            org_id=repo.org_id,
+            actor_id=user.id,
+            action=AuditAction.REPOSITORY_SETTINGS_CHANGED,
+            target=f"repository:{repo.full_name}",
+            metadata={"auto_review_enabled": body.auto_review_enabled},
+        )
     repo.auto_review_enabled = body.auto_review_enabled
     await db.commit()
     return _to_public(repo)
+
+
+@router.delete("/{repo_id}/data", status_code=status.HTTP_202_ACCEPTED)
+async def delete_repository_data(
+    repo_id: uuid.UUID, user: OrgAdmin, db: Db, redis: RedisPool
+) -> dict[str, str]:
+    """Delete a disconnected (or never connected) repository's data now:
+    reviews, findings, indexes, clone and index files, and the row itself."""
+    repo = await _require_repo(db, repo_id, user.org_id)
+    try:
+        await lifecycle.request_repository_purge(db, redis, repo=repo, actor=user)
+    except lifecycle.StillConnectedError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this repository is still connected through the GitHub App; remove it from the "
+            "App's repository access on GitHub first",
+        ) from exc
+    return {"status": "queued"}
 
 
 @router.get("/{repo_id}/pulls", response_model=list[PullRequestSummary])
@@ -175,7 +213,14 @@ async def review_pull_request(
         branch_index_id = view.ready.id
 
     run = await github_service.queue_github_review(
-        db, redis, pr=pr, agent=body.agent, trigger="manual", branch_index_id=branch_index_id
+        db,
+        redis,
+        pr=pr,
+        agent=body.agent,
+        trigger="manual",
+        branch_index_id=branch_index_id,
+        actor_id=user.id,
+        repo_full_name=repo.full_name,
     )
     return AnalysisRunPublic(
         id=run.id,
@@ -216,5 +261,6 @@ async def index_repository(
         branch_name=body.branch_name or repo.default_branch,
         target_sha=None,
         force_full=body.force_full,
+        actor_id=user.id,
     )
     return BranchIndexPublic.model_validate(row)

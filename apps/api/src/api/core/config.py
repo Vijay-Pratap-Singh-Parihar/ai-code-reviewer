@@ -65,6 +65,21 @@ class Settings(BaseSettings):
     github_webhook_public_url: str = ""
     smee_url: str = "https://smee.io"
 
+    # Data lifecycle: how long a disconnected repository's data (reviews,
+    # indexes, clone) is kept before the worker's retention job purges it.
+    # Must match the worker's setting of the same name.
+    revu_disconnected_retention_days: int = 30
+    # Comma-separated emails granted platform admin (may create the GitHub
+    # App) when they sign up or log in. Granting is one-way; revoke with
+    # `python -m api.cli platform-admin revoke EMAIL`.
+    revu_platform_admin_emails: str = ""
+
+    @property
+    def platform_admin_emails(self) -> frozenset[str]:
+        return frozenset(
+            e.strip().lower() for e in self.revu_platform_admin_emails.split(",") if e.strip()
+        )
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

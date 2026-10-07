@@ -42,19 +42,19 @@ edges:
   - caller: api.services.auth.signup
     callee: db.organization.User
     file: apps/api/src/api/services/auth.py
-    line: 77
+    line: 97
     note: "signup() constructs a new User() row"
 
   - caller: api.services.auth.signup
     callee: db.organization.Organization
     file: apps/api/src/api/services/auth.py
-    line: 73
+    line: 93
     note: "signup() constructs a new Organization() row"
 
   - caller: api.services.auth._issue_token_pair
     callee: api.core.security.create_access_token
     file: apps/api/src/api/services/auth.py
-    line: 51
+    line: 53
     note: "_issue_token_pair() calls create_access_token(user_id=..., org_id=..., role=...)"
 
   - caller: worker.jobs.analyze.execute_review
