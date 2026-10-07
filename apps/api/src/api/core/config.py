@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     github_api_url: str = "https://api.github.com"
     github_web_url: str = "https://github.com"
 
+    # One-click App creation (manifest flow). The App's credentials are then
+    # stored encrypted in the database instead of the variables above.
+    credential_encryption_key: str = "change-me-dev-only-not-for-production"
+    # Where the browser reaches the web app; GitHub redirects back here.
+    web_app_url: str = "http://localhost:3000"
+    # A publicly reachable URL for POST /github/webhook. When empty (local
+    # development), a smee.io channel relays webhooks instead.
+    github_webhook_public_url: str = ""
+    smee_url: str = "https://smee.io"
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"

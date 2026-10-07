@@ -181,7 +181,9 @@ def _enqueued(client: AsyncClient) -> list[tuple[str, tuple[object, ...]]]:
 async def test_app_info_reports_unconfigured_by_default(api_client: AsyncClient) -> None:
     headers = await _signup(api_client, "info@example.com")
     body = (await api_client.get("/github/app", headers=headers)).json()
-    assert body == {"configured": False, "install_url": None, "webhook_configured": False}
+    assert body["configured"] is False
+    assert body["install_url"] is None
+    assert body["webhook_configured"] is False
 
 
 async def test_endpoints_needing_github_return_503_when_unconfigured(

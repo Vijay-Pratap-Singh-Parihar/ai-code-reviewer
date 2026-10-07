@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     github_app_private_key_path: str = ""
     github_api_url: str = "https://api.github.com"
     github_web_url: str = "https://github.com"
+    # Decrypts App credentials stored by the in-app manifest flow (must
+    # match the API's value).
+    credential_encryption_key: str = "change-me-dev-only-not-for-production"
     # Local git cache for GitHub-connected repos (index builds, cross-file).
     revu_repo_cache_dir: str = ".revu/repos"
 
@@ -76,7 +79,9 @@ class WorkerSettings:
         config = settings.github_app_config()
         ctx["github_client_factory"] = make_client_factory(config) if config else None
         if config is None:
-            logger.info("GitHub App not configured; GitHub jobs will fail fast if enqueued")
+            logger.info("No GitHub App in env; jobs will use one stored in the database, if any")
+        ctx["credential_encryption_key"] = settings.credential_encryption_key
+        ctx["github_api_url"] = settings.github_api_url
         ctx["git_base_url"] = settings.github_web_url
         ctx["repo_cache_dir"] = Path(settings.revu_repo_cache_dir).resolve()
 

@@ -264,7 +264,30 @@ export type GitHubAppInfo = {
   configured: boolean;
   install_url: string | null;
   webhook_configured: boolean;
+  source?: "env" | "database" | null;
+  slug?: string | null;
+  app_url?: string | null;
+  webhook_proxy_url?: string | null;
+  error?: string | null;
 };
+
+export type ManifestStart = { action_url: string; manifest: Record<string, unknown> };
+
+/** Step 1 of one-click App creation: what to POST to GitHub. */
+export function startAppManifest(organization?: string): Promise<ManifestStart> {
+  return apiFetchJson<ManifestStart>("/github/app/manifest", {
+    method: "POST",
+    body: JSON.stringify({ organization: organization || null }),
+  });
+}
+
+/** Step 2: trade the code GitHub redirected back with for the new App. */
+export function completeAppManifest(body: { code: string; state: string }): Promise<GitHubAppInfo> {
+  return apiFetchJson<GitHubAppInfo>("/github/app/conversions", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
 
 export type InstallationPublic = {
   id: string;

@@ -336,54 +336,55 @@ on every PR open or push is opt-in per repo (the **Auto-review** switch on the R
 - Auto-review always uses the cheaper `diff_only` reviewer. `cross_file` is always an explicit
   per-PR choice.
 
-### 1. Register a GitHub App (once)
+### 1. Create the GitHub App: one click, from inside revu
 
-GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App**:
+Open **GitHub** in the sidebar and click **Create GitHub App**. Optionally, name a GitHub
+organization to own it.
 
-| Field | Value |
-|---|---|
-| GitHub App name | anything unique, e.g. `revu-dev-<yourname>` (its URL slug becomes `GITHUB_APP_SLUG`) |
-| Homepage URL | `http://localhost:3000` |
-| Callback URL | `http://localhost:3000/github/setup` |
-| Request user authorization (OAuth) during installation | **checked**. revu uses this to verify that the person installing really owns the installation |
-| Webhook → Active | checked, URL = your smee.io channel (step 2), secret = a random string you also put in `GITHUB_WEBHOOK_SECRET` |
-| Repository permissions | **Contents: Read-only**, **Pull requests: Read-only** (Metadata: Read-only is added automatically) |
-| Subscribe to events | **Pull request**, **Push** (installation events are always delivered to Apps) |
-| Where can this App be installed | Only on this account |
+1. revu prepares the App's settings and your browser carries them to GitHub. GitHub shows them for
+   confirmation; you can rename the App there. The settings are:
+   - Read-only access to code and pull requests.
+   - The `pull_request` and `push` events.
+   - The callback and redirect URLs.
+   - "Request user authorization (OAuth) during installation".
+   - A webhook pointed at a fresh smee.io channel.
+2. Click **Create GitHub App** on GitHub. You're sent back to `/github/app-created`, which:
+   - Exchanges GitHub's one-time code for the App's ID, private key, client secret and webhook
+     secret.
+   - Stores them **encrypted** (`CREDENTIAL_ENCRYPTION_KEY`) in the `github_app_credentials` table.
+3. Click **Install on your repositories** (step 3 below).
 
-After creating it:
-1. Note the **App ID** and **Client ID**.
-2. **Generate a new client secret.**
-3. **Generate a private key.** A `.pem` file downloads. Move it into `./.secrets/` at the repo
-   root (git-ignored).
+Nothing is copied by hand. A signed, one-hour `state` ties the redirect to the user who started it,
+so a forged or replayed redirect is refused. There is one App per deployment: once it exists, the
+button is replaced by the connect flow. Only organization owners and admins can create it.
 
-Then fill in `.env`:
+> **Keep `CREDENTIAL_ENCRYPTION_KEY` stable.** The stored credentials can't be decrypted with a
+> different key, and revu refuses to store them under the shipped placeholder when
+> `ENVIRONMENT=production`. Generate a real key with the command in `.env.example`.
 
-```bash
-GITHUB_APP_ID=123456
-GITHUB_APP_SLUG=revu-dev-yourname
-GITHUB_APP_PRIVATE_KEY_PATH=/run/revu-secrets/revu-dev-yourname.private-key.pem  # Docker path
-GITHUB_WEBHOOK_SECRET=<the random string from the webhook field>
-GITHUB_CLIENT_ID=Iv23...
-GITHUB_CLIENT_SECRET=<the generated client secret>
-```
+**Alternative: environment variables.** An operator can instead register an App by hand on GitHub
+and set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY_PATH` (or `..._PRIVATE_KEY`),
+`GITHUB_WEBHOOK_SECRET`, `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`. These need the same
+permissions, events, callback URL and OAuth-on-install setting as above. When complete, env vars
+take precedence over a stored App. Docker Compose mounts `./.secrets` read-only at
+`/run/revu-secrets` for the `.pem`.
 
-Docker Compose mounts `./.secrets` read-only at `/run/revu-secrets` in the api and worker containers.
-If you run the API or worker outside Docker, point `GITHUB_APP_PRIVATE_KEY_PATH` at the host path
-instead.
+### 2. Webhooks reach your laptop automatically
 
-### 2. Forward webhooks to your laptop with smee.io
+GitHub can't reach `localhost`, so the App's webhook URL is a smee.io channel. The
+**`webhook-relay`** Compose service (`python -m api.webhook_relay`):
+- Reads that channel from the database.
+- Subscribes to it.
+- Replays each delivery to `POST /github/webhook` with GitHub's original signature headers.
 
-GitHub can't reach `localhost`, so a free [smee.io](https://smee.io) channel relays deliveries:
+It idles until an App exists, and picks one up without a restart.
 
-```bash
-# Open https://smee.io/new once and copy the channel URL; use it as the App's webhook URL.
-npx smee-client --url https://smee.io/<your-channel> --target http://localhost:8000/github/webhook
-```
+Every delivery is checked against the webhook secret (HMAC-SHA256, `X-Hub-Signature-256`) before its
+body is parsed, so the relay is trusted with nothing. Deliveries are de-duplicated by
+`X-GitHub-Delivery`, so GitHub's retries and manual redeliveries never queue a second review.
 
-Every delivery is checked against `GITHUB_WEBHOOK_SECRET` (HMAC-SHA256, `X-Hub-Signature-256`)
-before its body is parsed. Deliveries are de-duplicated by `X-GitHub-Delivery`, so GitHub's retries
-and manual redeliveries never queue a second review.
+On a server with a public URL, set `GITHUB_WEBHOOK_PUBLIC_URL=https://<host>/github/webhook` before
+creating the App. GitHub then posts directly and no smee channel is created.
 
 ### 3. Install the App and link it to your revu organization
 
@@ -409,7 +410,8 @@ You land on **Repositories**:
 
 | Endpoint | What it does |
 |---|---|
-| `GET /github/app` | whether the App is configured, plus the install URL |
+| `GET /github/app` | whether an App is set up (and from env or the database), plus the install URL |
+| `POST /github/app/manifest` · `POST /github/app/conversions` | one-click App creation: start (manifest + signed state) and finish (one-time code → stored credentials) |
 | `GET /github/installations` · `POST /github/installations` | list and link installations |
 | `POST /github/installations/{id}/sync` | full re-sync of an installation's repositories |
 | `POST /github/webhook` | GitHub → revu (signature-verified, unauthenticated by design) |
