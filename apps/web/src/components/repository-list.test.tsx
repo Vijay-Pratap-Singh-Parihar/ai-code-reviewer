@@ -63,6 +63,19 @@ describe("RepositoryList", () => {
     expect(screen.getAllByRole("switch")).toHaveLength(1);
   });
 
+  it("labels a repo whose App was uninstalled as access removed, not manual", async () => {
+    vi.mocked(listRepositories).mockResolvedValue([
+      repo({}),
+      repo({ id: "repo-3", full_name: "acme/gone", connected: false, is_active: false, github_repo_id: 303 }),
+    ]);
+
+    renderList();
+
+    expect(await screen.findByText("access removed")).toBeInTheDocument();
+    expect(screen.queryByText("manual")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "acme/gone" })).not.toBeInTheDocument();
+  });
+
   it("shows auto-review off by default and turns it on for that repo", async () => {
     vi.mocked(listRepositories).mockResolvedValue([repo({})]);
     vi.mocked(updateRepository).mockResolvedValue(repo({ auto_review_enabled: true }));
