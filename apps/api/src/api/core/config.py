@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_cors_origins: str = "http://localhost:3000"
 
-    database_url: str = "postgresql+asyncpg://revu:revu_dev_password@localhost:5432/revu"
+    # The API connects as `revu_app` (no superuser, no BYPASSRLS), so
+    # Postgres row-level security applies to everything it does. Migrations
+    # (`database_url_sync`) run as the schema owner. See `db.tenancy`.
+    database_url: str = (
+        "postgresql+asyncpg://revu_app:revu_app_dev_password@localhost:5432/revu"
+    )
     database_url_sync: str = "postgresql+psycopg://revu:revu_dev_password@localhost:5432/revu"
     redis_url: str = "redis://localhost:6379/0"
 

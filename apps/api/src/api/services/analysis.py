@@ -10,26 +10,14 @@ from sqlalchemy.orm import selectinload
 
 from api.core.config import get_settings
 from api.schemas.analysis import AnalysisRequest
-from api.services.branch_index import BranchIndexNotReadyError, get_current_branch_index
-from api.services.repositories import RepositoryOwnedByAnotherOrgError, get_or_create_repository
+from api.services.repositories import get_or_create_repository
 
 settings = get_settings()
 
-# Re-exported for backward compatibility: this module used to define both of
-# these itself (Stage 3); they moved to `api.services.repositories` in Stage 5
-# so `api.services.branch_index` could share them without importing this
-# module's analysis-specific pull-request logic. Existing callers/tests that
-# import `RepositoryOwnedByAnotherOrgError` from here still work unchanged.
-# `BranchIndexNotReadyError` is re-exported the same way for `agent="cross_file"`
-# requests (Stage 8's pipeline-wiring follow-up).
 __all__ = [
-    "BranchIndexNotReadyError",
-    "RepositoryOwnedByAnotherOrgError",
     "create_analysis_run",
     "get_run_for_org",
 ]
-
-_get_or_create_repository = get_or_create_repository
 
 
 async def _get_or_create_pull_request(
@@ -49,6 +37,7 @@ async def _get_or_create_pull_request(
 
     pr = PullRequest(
         repo_id=repo.id,
+        org_id=repo.org_id,
         number=body.pr_number,
         title=body.pr_title,
         body=body.pr_body,
@@ -66,26 +55,14 @@ async def _get_or_create_pull_request(
 async def create_analysis_run(
     session: AsyncSession, *, user: User, body: AnalysisRequest
 ) -> AnalysisRun:
-    repo = await _get_or_create_repository(
+    repo = await get_or_create_repository(
         session, org_id=user.org_id, full_name=body.repo_full_name
     )
     pr = await _get_or_create_pull_request(session, repo=repo, user=user, body=body)
 
-    branch_index_id: uuid.UUID | None = None
-    if body.agent == "cross_file":
-        view = await get_current_branch_index(
-            session, repo_id=repo.id, branch_name=body.base_branch
-        )
-        if view.ready is None:
-            raise BranchIndexNotReadyError(
-                f"no ready branch index for '{body.repo_full_name}' @ '{body.base_branch}'; "
-                "POST /repos/index for this branch and wait for it to reach 'ready' first"
-            )
-        branch_index_id = view.ready.id
-
     run = AnalysisRun(
         pr_id=pr.id,
-        branch_index_id=branch_index_id,
+        org_id=pr.org_id,
         config_snapshot={
             "agent": body.agent,
             "model": settings.revu_model_review,

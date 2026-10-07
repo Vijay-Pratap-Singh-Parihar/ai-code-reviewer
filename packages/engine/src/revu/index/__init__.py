@@ -8,7 +8,7 @@ importable library; see `IMPLEMENTATION_PLAN.md` Stage 4 for why):
 - `build_index_at_path(root)` — full index of a plain directory (no git required).
 - `incremental_update(repo_path, old_sha, new_sha, previous_result)` — reparse
   only changed files and re-assemble the graph.
-- `save_graph`/`load_graph` — serialise/deserialise the graph blob to disk.
+- `save_graph`/`load_graph` — serialise/deserialise the HMAC-signed graph blob.
 - `save_index_result`/`load_index_result`/`index_result_path` — serialise/
   deserialise the *whole* `IndexResult` (needed to feed `incremental_update`
   across separate process invocations, e.g. one ARQ job per update).
@@ -20,6 +20,7 @@ importable library; see `IMPLEMENTATION_PLAN.md` Stage 4 for why):
 from revu.index.graph import IndexResult, build_index, build_index_at_path
 from revu.index.incremental import IncrementalUpdateResult, incremental_update
 from revu.index.store import (
+    IndexIntegrityError,
     index_result_path,
     load_graph,
     load_index_result,
@@ -40,6 +41,7 @@ from revu.index.vcs import (
 __all__ = [
     "GitRefError",
     "IncrementalUpdateResult",
+    "IndexIntegrityError",
     "IndexResult",
     "MergeBaseInfo",
     "NoCommonAncestorError",

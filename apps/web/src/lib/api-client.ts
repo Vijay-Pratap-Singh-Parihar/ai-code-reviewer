@@ -190,8 +190,9 @@ export type AnalysisRequest = {
   pr_title: string;
   pr_body?: string;
   diff: string;
-  agent?: Agent;
-  repo_path?: string | null;
+  // Pasted diffs are always reviewed diff-only: cross-file review reads the
+  // repository, which only GitHub-connected repos give the worker.
+  agent?: "diff_only";
 };
 
 export function triggerAnalysis(body: AnalysisRequest): Promise<AnalysisRunPublic> {
@@ -204,14 +205,6 @@ export function triggerAnalysis(body: AnalysisRequest): Promise<AnalysisRunPubli
 export function getAnalysisRun(runId: string): Promise<AnalysisRunPublic> {
   return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}`);
 }
-
-export type IndexTriggerRequest = {
-  repo_full_name: string;
-  branch_name?: string;
-  repo_path: string;
-  target_sha?: string | null;
-  force_full?: boolean;
-};
 
 export type BranchIndexPublic = {
   id: string;
@@ -241,13 +234,6 @@ export type BranchIndexStatusPublic = {
   latest_attempt_status: string | null;
   latest_attempt_id: string | null;
 };
-
-export function triggerIndex(body: IndexTriggerRequest): Promise<BranchIndexPublic> {
-  return apiFetchJson<BranchIndexPublic>("/repos/index", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
 
 export function getBranchIndexStatus(
   repoId: string,

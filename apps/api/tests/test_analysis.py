@@ -1,10 +1,10 @@
 import uuid
-from datetime import UTC, datetime
 
+from api.core.security import decode_access_token
 from api.db.session import get_db
 from api.main import app
-from db.branch_index import BranchIndex, BranchIndexStatus
 from db.pull_request import AnalysisRun, FindingRecord
+from db.tenancy import bind_org
 from httpx import AsyncClient
 from revu.models import FindingCategory, Severity
 
@@ -59,8 +59,10 @@ async def test_trigger_analysis_creates_queued_run_and_enqueues_job(
     assert len(enqueued) == 1
     function_name, args = enqueued[0]
     assert function_name == "analyze_pr"
+    # Only the run id and its organisation cross the queue; the worker
+    # reads everything else back from the rows this request wrote.
     assert args[0] == body["id"]
-    assert args[1] == "Fix off-by-one"
+    assert len(args) == 2 and uuid.UUID(str(args[1]))
 
 
 async def test_trigger_analysis_requires_auth(api_client: AsyncClient) -> None:
@@ -122,125 +124,58 @@ async def test_get_analysis_from_another_org_returns_404(api_client: AsyncClient
     assert response.status_code == 404
 
 
-async def test_trigger_analysis_conflicts_when_repo_owned_by_another_org(
+async def test_same_repo_name_in_two_orgs_gives_each_its_own_isolated_copy(
     api_client: AsyncClient,
 ) -> None:
-    """Regression test: `repositories.full_name` is globally unique (it
-    models a real GitHub repo, which can only belong to one org's App
-    installation). A second org posting the same `repo_full_name` must get a
-    clear conflict, not silently have their PR attached to the first org's
-    repository — which previously made the run invisible to its own creator.
-    """
-    token_a = await _signup_and_get_token(api_client, "conflict-a@example.com")
-    first = await api_client.post(
+    """Repositories are unique per organisation: a second org reviewing the
+    same repository gets its own row and runs, and neither can read the
+    other's."""
+    token_a = await _signup_and_get_token(api_client, "copy-a@example.com")
+    run_a = await api_client.post(
         "/analysis", json=_analysis_payload(), headers=_auth_header(token_a)
     )
-    assert first.status_code == 202
+    assert run_a.status_code == 202, run_a.text
 
-    token_b = await _signup_and_get_token(api_client, "conflict-b@example.com")
-    second = await api_client.post(
+    token_b = await _signup_and_get_token(api_client, "copy-b@example.com")
+    run_b = await api_client.post(
         "/analysis", json=_analysis_payload(), headers=_auth_header(token_b)
     )
+    assert run_b.status_code == 202, run_b.text
 
-    assert second.status_code == 409
+    repos_a = (await api_client.get("/repos", headers=_auth_header(token_a))).json()
+    repos_b = (await api_client.get("/repos", headers=_auth_header(token_b))).json()
+    assert [r["full_name"] for r in repos_a] == ["acme/widgets"]
+    assert [r["full_name"] for r in repos_b] == ["acme/widgets"]
+    assert repos_a[0]["id"] != repos_b[0]["id"]
 
-
-async def test_trigger_analysis_defaults_to_diff_only_agent(api_client: AsyncClient) -> None:
-    token = await _signup_and_get_token(api_client, "default-agent@example.com")
-
-    response = await api_client.post(
-        "/analysis", json=_analysis_payload(), headers=_auth_header(token)
+    cross = await api_client.get(
+        f"/analysis/{run_a.json()['id']}", headers=_auth_header(token_b)
     )
-
-    assert response.status_code == 202, response.text
-    enqueued = api_client.fake_redis_pool.enqueued  # type: ignore[attr-defined]
-    _function_name, args = enqueued[0]
-    assert args[4] == "diff_only"
-    assert args[5] is None
+    assert cross.status_code == 404
 
 
-async def test_trigger_analysis_cross_file_without_repo_path_returns_422(
-    api_client: AsyncClient,
-) -> None:
-    token = await _signup_and_get_token(api_client, "cross-file-no-path@example.com")
+async def test_trigger_analysis_rejects_cross_file(api_client: AsyncClient) -> None:
+    """Cross-file review reads repository files, so it is only available for
+    GitHub-connected repos, where the worker owns the checkout."""
+    token = await _signup_and_get_token(api_client, "cross-file-manual@example.com")
 
     payload = _analysis_payload(agent="cross_file")
     response = await api_client.post("/analysis", json=payload, headers=_auth_header(token))
 
     assert response.status_code == 422
-
-
-async def test_trigger_analysis_cross_file_without_ready_index_returns_409(
-    api_client: AsyncClient,
-) -> None:
-    """The caller's own cost/depth choice (`agent="cross_file"`) must fail
-    fast, before any job is enqueued, when Stage 5's branch memory has no
-    `ready` build for this (repo, base_branch) yet — there is no on-demand
-    indexing fallback.
-    """
-    token = await _signup_and_get_token(api_client, "cross-file-not-ready@example.com")
-
-    payload = _analysis_payload(agent="cross_file", repo_path="/tmp/acme-widgets")
-    response = await api_client.post("/analysis", json=payload, headers=_auth_header(token))
-
-    assert response.status_code == 409
-    assert "no ready branch index" in response.json()["detail"]
     assert api_client.fake_redis_pool.enqueued == []  # type: ignore[attr-defined]
 
 
-async def test_trigger_analysis_cross_file_with_ready_index_enqueues_job(
-    api_client: AsyncClient,
-) -> None:
-    token = await _signup_and_get_token(api_client, "cross-file-ready@example.com")
+async def test_trigger_analysis_rejects_a_worker_filesystem_path(api_client: AsyncClient) -> None:
+    """Regression: `repo_path` used to let any user point the worker at any
+    directory it could read, including another tenant's clone."""
+    token = await _signup_and_get_token(api_client, "repo-path@example.com")
 
-    # `POST /repos/index` both registers the `Repository` row under this
-    # user's org (via `get_or_create_repository`) and hands back its
-    # `repo_id` — reused here so the `ready` row seeded below belongs to the
-    # exact same repo `/analysis`'s own `get_or_create_repository` call will
-    # resolve `repo_full_name` to.
-    index_trigger = await api_client.post(
-        "/repos/index",
-        json={
-            "repo_full_name": "acme/widgets",
-            "branch_name": "main",
-            "repo_path": "/tmp/acme-widgets",
-        },
-        headers=_auth_header(token),
-    )
-    assert index_trigger.status_code == 202, index_trigger.text
-    repo_id = uuid.UUID(index_trigger.json()["repo_id"])
-
-    # Seed a `ready` BranchIndex row directly through the app's own
-    # overridden `get_db` dependency — same pattern `test_branch_index.py`'s
-    # staleness test uses — rather than running the real worker build, which
-    # is covered separately.
-    session_dep = app.dependency_overrides[get_db]
-    async for session in session_dep():
-        session.add(
-            BranchIndex(
-                repo_id=repo_id,
-                branch_name="main",
-                head_sha="a" * 40,
-                status=BranchIndexStatus.READY,
-                node_count=10,
-                edge_count=20,
-                graph_ref="/blobs/a.graph.pkl.gz",
-                build_duration_ms=500,
-                created_at=datetime.now(UTC),
-            )
-        )
-        await session.commit()
-        break
-
-    payload = _analysis_payload(agent="cross_file", repo_path="/tmp/acme-widgets")
+    payload = _analysis_payload(repo_path="/data/repos")
     response = await api_client.post("/analysis", json=payload, headers=_auth_header(token))
 
-    assert response.status_code == 202, response.text
-    enqueued = api_client.fake_redis_pool.enqueued  # type: ignore[attr-defined]
-    # index 0 is the /repos/index trigger's own enqueue; index 1 is /analysis's.
-    _function_name, args = enqueued[1]
-    assert args[4] == "cross_file"
-    assert args[5] == "/tmp/acme-widgets"
+    assert response.status_code == 422
+    assert api_client.fake_redis_pool.enqueued == []  # type: ignore[attr-defined]
 
 
 async def test_get_analysis_includes_each_finding_s_evidence_trail(
@@ -259,6 +194,7 @@ async def test_get_analysis_includes_each_finding_s_evidence_trail(
 
     session_dep = app.dependency_overrides[get_db]
     async for session in session_dep():
+        await bind_org(session, decode_access_token(token).org_id)
         run = await session.get(AnalysisRun, uuid.UUID(run_id))
         assert run is not None
         session.add(

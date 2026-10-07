@@ -2,6 +2,7 @@ from typing import Annotated
 
 from arq import ArqRedis
 from db.organization import User
+from db.tenancy import bind_org
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,9 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user no longer exists")
 
+    # Everything this request does from here on runs under row-level
+    # security for the user's organisation (the route gets the same session).
+    await bind_org(db, user.org_id)
     return user
 
 

@@ -1,5 +1,6 @@
-"""Branch-memory service: trigger a build and read back "the current index
-for this branch" without ever exposing a half-written row.
+"""Branch-memory service: read back "the current index for this branch"
+without ever exposing a half-written row. Builds are queued from
+`api.services.github.queue_github_index` for GitHub-connected repos.
 
 See `db.branch_index.BranchIndex`'s docstring for the row-lifecycle design
 this module implements (one row per build *attempt*, `status=ready` only
@@ -10,24 +11,12 @@ analyse against a partially-written graph") it exists to satisfy.
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from db.branch_index import BranchIndex, BranchIndexStatus, IndexUpdateLog
-from db.organization import User
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.schemas.branch_index import IndexTriggerRequest
-from api.services.repositories import get_or_create_repository, get_repository_for_org
-
-
-class BranchIndexNotReadyError(Exception):
-    """Raised when a `cross_file` analysis is requested for a (repo,
-    base_branch) pair with no `ready` `BranchIndex` row yet — there is no
-    graph to seed the agent's tools with. The caller must `POST /repos/index`
-    for this branch first and wait for it to reach `ready` (or poll
-    `GET /repos/{repo_id}/branches/{branch_name}/index`) before retrying.
-    """
+from api.services.repositories import get_repository_for_org
 
 
 @dataclass
@@ -83,43 +72,6 @@ async def get_recent_update_logs(
         .limit(limit)
     )
     return list((await session.scalars(stmt)).all())
-
-
-async def trigger_index_build(
-    session: AsyncSession, *, user: User, body: IndexTriggerRequest
-) -> BranchIndex:
-    """Create the `pending` row a new build attempt starts life as. The
-    actual git/indexing work — including resolving `target_sha` if the
-    caller didn't pin one — happens worker-side (`worker.jobs.index_branch`),
-    since that's the only place guaranteed to have `repo_path` on a
-    filesystem it can read; see `IndexTriggerRequest`'s docstring.
-
-    `created_at` is set explicitly (client-side, `datetime.now(UTC)`) rather
-    than left to `CreatedAtMixin`'s `server_default=func.now()`: Postgres's
-    `now()` is *transaction-scoped* (`transaction_timestamp()`), so several
-    rows inserted inside one transaction — which happens routinely in tests
-    that share a savepoint-per-request transaction, and could in principle
-    happen in production for two builds triggered inside one longer-lived
-    transaction — would otherwise all get an identical timestamp, making
-    `get_current_branch_index`'s `ORDER BY created_at DESC` ambiguous between
-    them. A Python-side timestamp advances per statement and keeps build
-    attempts in the strict chronological order the staleness logic depends on.
-    """
-    repo = await get_or_create_repository(
-        session, org_id=user.org_id, full_name=body.repo_full_name
-    )
-
-    row = BranchIndex(
-        repo_id=repo.id,
-        branch_name=body.branch_name,
-        head_sha=body.target_sha,
-        status=BranchIndexStatus.PENDING,
-        created_at=datetime.now(UTC),
-    )
-    session.add(row)
-    await session.commit()
-    await session.refresh(row)
-    return row
 
 
 async def get_branch_index_status(

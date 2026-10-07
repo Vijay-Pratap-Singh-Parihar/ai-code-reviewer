@@ -1,45 +1,38 @@
-import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import db as _db_models  # noqa: F401  (registers all models on Base.metadata)
 import pytest
 import pytest_asyncio
-from db.base import Base
-from sqlalchemy import create_engine
-from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-TEST_DATABASE_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    "postgresql+psycopg://revu:revu_dev_password@localhost:5434/revu_test",
+from db.testing import (
+    TEST_APP_DATABASE_URL,
+    TEST_DATABASE_URL,
+    DatabaseUnavailable,
+    async_url,
+    prepare_test_database,
 )
-TEST_DATABASE_URL_ASYNC = TEST_DATABASE_URL.replace("+psycopg", "+asyncpg")
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from worker.storage import TenantStorage, signing_key_from_secret
 
 
 def _skip_if_unreachable() -> None:
-    engine = create_engine(TEST_DATABASE_URL)
     try:
-        with engine.connect():
-            pass
-    except OperationalError:
+        prepare_test_database()
+    except DatabaseUnavailable:
         pytest.skip(f"no Postgres reachable at {TEST_DATABASE_URL}; skipping DB-backed tests")
-    finally:
-        engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def worker_db_session() -> AsyncIterator[AsyncSession]:
-    """A real async session against the test database, wrapped in a
-    transaction that's rolled back afterwards — same pattern as the API's
-    `api_client` fixture, so the worker job under test runs its own
+    """A real async session against the test database, connected as the
+    application role (row-level security applies, as in production), wrapped
+    in a transaction that's rolled back afterwards — same pattern as the
+    API's `api_client` fixture, so the worker job under test runs its own
     `session.commit()` calls without leaking data between tests.
     """
     _skip_if_unreachable()
 
-    engine = create_async_engine(TEST_DATABASE_URL_ASYNC)
-    async with engine.begin() as setup_conn:
-        await setup_conn.run_sync(Base.metadata.create_all)
-
+    engine = create_async_engine(async_url(TEST_APP_DATABASE_URL))
     connection = await engine.connect()
     transaction = await connection.begin()
     session_factory = async_sessionmaker(
@@ -87,5 +80,17 @@ class _SingleSessionFactory:
 
 
 @pytest.fixture
-def worker_ctx(worker_db_session: AsyncSession) -> dict[str, object]:
-    return {"db_session_factory": _SingleSessionFactory(worker_db_session)}
+def tenant_storage(tmp_path: Path) -> TenantStorage:
+    return TenantStorage(
+        repo_cache_root=tmp_path / "repos",
+        index_root=tmp_path / "index",
+        signing_key=signing_key_from_secret("test-secret"),
+    )
+
+
+@pytest.fixture
+def worker_ctx(worker_db_session: AsyncSession, tenant_storage: TenantStorage) -> dict[str, object]:
+    return {
+        "db_session_factory": _SingleSessionFactory(worker_db_session),
+        "storage": tenant_storage,
+    }

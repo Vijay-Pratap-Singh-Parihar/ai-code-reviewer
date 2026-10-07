@@ -23,12 +23,21 @@ detection) is Stage 5's job per `IMPLEMENTATION_PLAN.md`'s stage map, run
 from `apps/worker` where both `revu` and `db` are already available. See
 `packages/db/tests/test_index_store_integration.py` for a real-Postgres
 test proving this dict round-trips through the actual `BranchIndex` model.
+
+**Integrity:** blobs are pickles, and unpickling runs code, so every blob is
+written as `MAGIC + HMAC-SHA256(key, gzip payload) + gzip payload` and
+loading verifies the tag *before* unpickling. A blob that was tampered with,
+written under another key, or left over from before signing existed is
+refused with `IndexIntegrityError` instead of being executed. Callers keep
+each tenant's blobs in their own `storage_dir` as well; the signature is
+the second line of defence, not the only one.
 """
 
 from __future__ import annotations
 
 import gzip
 import hashlib
+import hmac
 import os
 import pickle
 from pathlib import Path
@@ -42,8 +51,34 @@ DEFAULT_STORAGE_DIR_ENV = "REVU_INDEX_STORAGE_DIR"
 DEFAULT_STORAGE_DIR = ".revu/index-graphs"
 
 
+_MAGIC = b"REVU-IDX1\n"
+_TAG_LEN = hashlib.sha256().digest_size
+
+
+class IndexIntegrityError(ValueError):
+    """A blob's signature is missing or does not match: refuse to unpickle it."""
+
+
 def default_storage_dir() -> Path:
     return Path(os.environ.get(DEFAULT_STORAGE_DIR_ENV, DEFAULT_STORAGE_DIR))
+
+
+def _write_signed(path: Path, obj: object, signing_key: bytes) -> None:
+    payload = gzip.compress(pickle.dumps(obj))
+    tag = hmac.new(signing_key, payload, hashlib.sha256).digest()
+    path.write_bytes(_MAGIC + tag + payload)
+
+
+def _read_signed(path: Path, signing_key: bytes) -> object:
+    blob = path.read_bytes()
+    if not blob.startswith(_MAGIC) or len(blob) < len(_MAGIC) + _TAG_LEN:
+        raise IndexIntegrityError(f"{path} is not a signed index blob")
+    tag = blob[len(_MAGIC) : len(_MAGIC) + _TAG_LEN]
+    payload = blob[len(_MAGIC) + _TAG_LEN :]
+    expected = hmac.new(signing_key, payload, hashlib.sha256).digest()
+    if not hmac.compare_digest(tag, expected):
+        raise IndexIntegrityError(f"signature mismatch for {path}")
+    return pickle.loads(gzip.decompress(payload))  # noqa: S301 — signature verified above
 
 
 def _digest(repo_identifier: str, branch_name: str, head_sha: str) -> str:
@@ -67,6 +102,7 @@ def save_graph(
     repo_identifier: str,
     branch_name: str,
     head_sha: str,
+    signing_key: bytes,
     storage_dir: Path | None = None,
 ) -> Path:
     """Serialise `graph` to disk and return the path written (the value to
@@ -74,15 +110,13 @@ def save_graph(
     storage_dir = storage_dir or default_storage_dir()
     storage_dir.mkdir(parents=True, exist_ok=True)
     path = storage_dir / _blob_filename(repo_identifier, branch_name, head_sha)
-    payload = pickle.dumps(graph)
-    path.write_bytes(gzip.compress(payload))
+    _write_signed(path, graph, signing_key)
     return path
 
 
-def load_graph(path: Path) -> rx.PyDiGraph:
+def load_graph(path: Path, *, signing_key: bytes) -> rx.PyDiGraph:
     """Load a graph previously written by `save_graph`."""
-    payload = gzip.decompress(path.read_bytes())
-    graph = pickle.loads(payload)  # noqa: S301 — trusted, locally-produced file, not user input
+    graph = _read_signed(path, signing_key)
     if not isinstance(graph, rx.PyDiGraph):
         raise TypeError(f"expected a PyDiGraph blob at {path}, got {type(graph)!r}")
     return graph
@@ -109,6 +143,7 @@ def save_index_result(
     repo_identifier: str,
     branch_name: str,
     head_sha: str,
+    signing_key: bytes,
     storage_dir: Path | None = None,
 ) -> Path:
     """Serialise the *whole* `IndexResult` (symbols, import/call edges,
@@ -134,14 +169,13 @@ def save_index_result(
         head_sha=head_sha,
         storage_dir=storage_dir,
     )
-    path.write_bytes(gzip.compress(pickle.dumps(result)))
+    _write_signed(path, result, signing_key)
     return path
 
 
-def load_index_result(path: Path) -> IndexResult:
+def load_index_result(path: Path, *, signing_key: bytes) -> IndexResult:
     """Load an `IndexResult` previously written by `save_index_result`."""
-    payload = gzip.decompress(path.read_bytes())
-    result = pickle.loads(payload)  # noqa: S301 — trusted, locally-produced file, not user input
+    result = _read_signed(path, signing_key)
     if not isinstance(result, IndexResult):
         raise TypeError(f"expected an IndexResult blob at {path}, got {type(result)!r}")
     return result
