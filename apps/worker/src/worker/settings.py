@@ -11,8 +11,8 @@ from worker.github import make_client_factory
 from worker.jobs.analyze import analyze_pr
 from worker.jobs.db_ping import db_ping
 from worker.jobs.github import review_github_pr, sync_and_index_branch
-from worker.jobs.index_branch import update_branch_index
 from worker.jobs.ping import ping
+from worker.storage import TenantStorage, signing_key_from_secret
 
 # apps/worker/src/worker/settings.py -> repo root is four levels up.
 _REPO_ROOT_ENV = Path(__file__).resolve().parents[4] / ".env"
@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     credential_encryption_key: str = "change-me-dev-only-not-for-production"
     # Local git cache for GitHub-connected repos (index builds, cross-file).
     revu_repo_cache_dir: str = ".revu/repos"
+    # Signed branch-index blobs (graph + full index result).
+    revu_index_storage_dir: str = ".revu/index-graphs"
 
     def github_app_config(self) -> GitHubAppConfig | None:
         if not self.github_app_id or not (
@@ -64,7 +66,6 @@ class WorkerSettings:
         ping,
         db_ping,
         analyze_pr,
-        update_branch_index,
         review_github_pr,
         sync_and_index_branch,
     ]
@@ -83,7 +84,11 @@ class WorkerSettings:
         ctx["credential_encryption_key"] = settings.credential_encryption_key
         ctx["github_api_url"] = settings.github_api_url
         ctx["git_base_url"] = settings.github_web_url
-        ctx["repo_cache_dir"] = Path(settings.revu_repo_cache_dir).resolve()
+        ctx["storage"] = TenantStorage(
+            repo_cache_root=Path(settings.revu_repo_cache_dir).resolve(),
+            index_root=Path(settings.revu_index_storage_dir).resolve(),
+            signing_key=signing_key_from_secret(settings.credential_encryption_key),
+        )
 
     @staticmethod
     async def on_shutdown(ctx: dict[str, Any]) -> None:

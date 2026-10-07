@@ -50,18 +50,10 @@ async def trigger_analysis(
             f"repository '{body.repo_full_name}' is already registered under a different "
             "organization",
         ) from exc
-    except analysis_service.BranchIndexNotReadyError as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
-    await redis.enqueue_job(
-        "analyze_pr",
-        str(run.id),
-        body.pr_title,
-        body.pr_body,
-        body.diff,
-        body.agent,
-        body.repo_path,
-    )
+    # Only the run id crosses the queue: the worker reads the diff, title and
+    # body back from the rows this request just wrote, scoped by ownership.
+    await redis.enqueue_job("analyze_pr", str(run.id))
 
     # A run this endpoint just created has no findings yet by definition —
     # accessing `run.findings` here would trigger a lazy load outside an

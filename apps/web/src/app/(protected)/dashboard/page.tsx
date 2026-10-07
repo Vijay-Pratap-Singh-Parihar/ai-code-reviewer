@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
-import { TriggerIndexForm } from "@/components/trigger-index-form";
 import { TriggerAnalysisForm } from "@/components/trigger-analysis-form";
 import { RunStatusCard } from "@/components/run-status-card";
 import { AnalyticsWidgets } from "@/components/analytics-widgets";
@@ -40,23 +39,10 @@ export default function DashboardPage() {
           Advanced: review a pasted diff
           <span className="font-normal text-muted-foreground">— no GitHub connection needed</span>
         </summary>
-        <div className="grid gap-4 p-4 pt-0 lg:grid-cols-2">
+        <div className="p-4 pt-0">
           <Card>
             <CardHeader>
-              <CardTitle>1. Build a branch index</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="mb-3 text-sm text-muted-foreground">
-                Only needed before a <code className="font-mono">cross_file</code> review — skip this if
-                you&apos;re using the default, cheaper <code className="font-mono">diff_only</code> review.
-              </p>
-              <TriggerIndexForm />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>2. Trigger a review</CardTitle>
+              <CardTitle>Trigger a review</CardTitle>
             </CardHeader>
             <CardContent>
               <TriggerAnalysisForm onTriggered={(runId) => setRunIds((ids) => [runId, ...ids])} />

@@ -1,5 +1,6 @@
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import db as _db_models  # noqa: F401  (registers all models on Base.metadata)
 import pytest
@@ -8,6 +9,7 @@ from db.base import Base
 from sqlalchemy import create_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from worker.storage import TenantStorage, signing_key_from_secret
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
@@ -87,5 +89,19 @@ class _SingleSessionFactory:
 
 
 @pytest.fixture
-def worker_ctx(worker_db_session: AsyncSession) -> dict[str, object]:
-    return {"db_session_factory": _SingleSessionFactory(worker_db_session)}
+def tenant_storage(tmp_path: Path) -> TenantStorage:
+    return TenantStorage(
+        repo_cache_root=tmp_path / "repos",
+        index_root=tmp_path / "index",
+        signing_key=signing_key_from_secret("test-secret"),
+    )
+
+
+@pytest.fixture
+def worker_ctx(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage
+) -> dict[str, object]:
+    return {
+        "db_session_factory": _SingleSessionFactory(worker_db_session),
+        "storage": tenant_storage,
+    }

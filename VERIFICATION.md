@@ -283,6 +283,11 @@ docker compose logs worker --tail 5
 # → "Starting worker for 4 functions: ping, db_ping, analyze_pr, update_branch_index"
 ```
 
+> **Superseded:** `POST /repos/index` and its `repo_path` were removed in the isolation
+> hardening work (a caller-supplied worker path let any user read any directory the worker could).
+> Indexes are now built only for GitHub-connected repos via `POST /repos/{id}/index`. The commands
+> below are kept as the historical record of how Stage 5 was verified.
+
 `repo_path` in the trigger request must exist on the **worker container's** filesystem (there's no
 GitHub App yet — see IMPLEMENTATION_PLAN.md Stage 5 — and no host volume mount for arbitrary repos),
 so build a real throwaway git repo inside the container itself:

@@ -2,13 +2,12 @@
 
 import { useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { triggerAnalysis, formatApiError, type Agent } from "@/lib/api-client";
+import { triggerAnalysis, formatApiError } from "@/lib/api-client";
 import { saveRunMetadata } from "@/lib/run-metadata-store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const EXAMPLE_DIFF = `--- a/app.py
 +++ b/app.py
@@ -26,8 +25,6 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
   const [prTitle, setPrTitle] = useState("Fix off-by-one");
   const [prBody, setPrBody] = useState("");
   const [diff, setDiff] = useState(EXAMPLE_DIFF);
-  const [agent, setAgent] = useState<Agent>("diff_only");
-  const [repoPath, setRepoPath] = useState("");
 
   const mutation = useMutation({
     mutationFn: triggerAnalysis,
@@ -42,7 +39,7 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
         prTitle,
         prBody,
         diff,
-        agent,
+        agent: "diff_only",
       });
       onTriggered(run.id);
     },
@@ -58,8 +55,7 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
       pr_title: prTitle,
       pr_body: prBody,
       diff,
-      agent,
-      repo_path: agent === "cross_file" ? repoPath : undefined,
+      agent: "diff_only",
     });
   }
 
@@ -125,34 +121,10 @@ export function TriggerAnalysisForm({ onTriggered }: { onTriggered: (runId: stri
         />
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Label id="agent-label">Review depth</Label>
-        <Select value={agent} onValueChange={(value) => setAgent(value as Agent)}>
-          <SelectTrigger aria-labelledby="agent-label" className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="diff_only">diff_only — cheap, diff text only</SelectItem>
-            <SelectItem value="cross_file">cross_file — agentic, reads the repo (~4x cost)</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      {agent === "cross_file" && (
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="repo_path">Repo path (on the worker&apos;s filesystem)</Label>
-          <Input
-            id="repo_path"
-            required
-            value={repoPath}
-            onChange={(event) => setRepoPath(event.target.value)}
-            placeholder="/tmp/acme-widgets"
-          />
-          <p className="text-xs text-muted-foreground">
-            Requires a ready branch index for this repo/branch — build one above first.
-          </p>
-        </div>
-      )}
+      <p className="text-xs text-muted-foreground">
+        A pasted diff is reviewed on its own (diff-only). For a cross-file review that reads the
+        rest of the code, connect the repository through GitHub and review the pull request there.
+      </p>
 
       {mutation.isError && (
         <p role="alert" className="text-sm text-destructive">

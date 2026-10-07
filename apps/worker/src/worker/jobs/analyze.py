@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from db.branch_index import BranchIndex
-from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord
+from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullRequest
+from db.repository import Repository
 from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
 from revu.index.store import load_graph
@@ -14,14 +15,16 @@ from revu.models import Finding
 from revu.verify import verify_findings
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from worker.storage import TenantStorage
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL = "claude-sonnet-5"
 
 
 async def _run_cross_file(
-    *, run: AnalysisRun, session: AsyncSession, pr_title: str, pr_body: str, diff: str,
-    repo_path: str, model: str,
+    *, run: AnalysisRun, session: AsyncSession, repo: Repository, storage: TenantStorage,
+    pr_title: str, pr_body: str, diff: str, repo_path: str, model: str,
 ) -> list[Finding]:
     """The `agent="cross_file"` path: load the graph the caller's already-`ready`
     branch index built (validated at request time by
@@ -38,8 +41,13 @@ async def _run_cross_file(
     branch_index = await session.get(BranchIndex, run.branch_index_id)
     if branch_index is None or branch_index.graph_ref is None:
         raise RuntimeError(f"branch index {run.branch_index_id} has no usable graph_ref")
+    # The run row says which index to use; never trust that it belongs to
+    # the run's own repository without checking.
+    if branch_index.repo_id != repo.id:
+        raise RuntimeError(f"branch index {branch_index.id} belongs to a different repository")
 
-    graph = load_graph(Path(branch_index.graph_ref))
+    graph_path = storage.require_index_path(Path(branch_index.graph_ref), repo.org_id, repo.id)
+    graph = load_graph(graph_path, signing_key=storage.signing_key)
     repo_root = Path(repo_path)
 
     result = await review_cross_file(
@@ -60,11 +68,13 @@ async def execute_review(
     session: AsyncSession,
     run: AnalysisRun,
     *,
+    repo: Repository,
     pr_title: str,
     pr_body: str,
     diff: str,
     agent: str,
     repo_path: str | None,
+    storage: TenantStorage | None,
 ) -> None:
     """The part of a review shared by every trigger path: run the selected
     reviewer on an already-`running` run, then persist findings and mark it
@@ -73,11 +83,11 @@ async def execute_review(
 
     try:
         if agent == "cross_file":
-            if not repo_path:
-                raise RuntimeError("agent='cross_file' requires repo_path")
+            if not repo_path or storage is None:
+                raise RuntimeError("agent='cross_file' requires a checkout of the repository")
             findings = await _run_cross_file(
-                run=run, session=session, pr_title=pr_title, pr_body=pr_body,
-                diff=diff, repo_path=repo_path, model=model,
+                run=run, session=session, repo=repo, storage=storage, pr_title=pr_title,
+                pr_body=pr_body, diff=diff, repo_path=repo_path, model=model,
             )
         else:
             result = await review_diff(
@@ -127,20 +137,11 @@ async def mark_run_failed(session: AsyncSession, run: AnalysisRun, exc: BaseExce
     await session.commit()
 
 
-async def analyze_pr(
-    ctx: dict[str, Any],
-    run_id: str,
-    pr_title: str,
-    pr_body: str,
-    diff: str,
-    agent: str = "diff_only",
-    repo_path: str | None = None,
-) -> None:
-    """The manual (diff-paste) trigger path: `diff`/`repo_path` arrive as
-    job arguments from `POST /analysis` — see `AnalysisRequest`'s docstring.
-    GitHub-connected repos use `worker.jobs.github.review_github_pr` instead,
-    which fetches both itself. `agent` is the caller's own cost/depth
-    choice, not something this job escalates on its own.
+async def analyze_pr(ctx: dict[str, Any], run_id: str) -> None:
+    """The manual (diff-paste) trigger path from `POST /analysis`. Always
+    `diff_only`: it has no checkout to read. Only the run id crosses the
+    queue; the diff, title and body are read back from the run's own rows.
+    GitHub-connected repos use `worker.jobs.github.review_github_pr`.
     """
     session_factory = ctx["db_session_factory"]
 
@@ -149,9 +150,16 @@ async def analyze_pr(
         if run is None:
             logger.error("analyze_pr: run %s no longer exists", run_id)
             return
+        pr = await session.get(PullRequest, run.pr_id)
+        repo = await session.get(Repository, pr.repo_id) if pr else None
+        if pr is None or repo is None or not run.diff_text:
+            await mark_run_failed(
+                session, run, RuntimeError("pull request, repository or diff is gone")
+            )
+            return
 
         await mark_run_running(session, run)
         await execute_review(
-            session, run, pr_title=pr_title, pr_body=pr_body, diff=diff,
-            agent=agent, repo_path=repo_path,
+            session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "",
+            diff=run.diff_text, agent="diff_only", repo_path=None, storage=None,
         )

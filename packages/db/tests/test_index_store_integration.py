@@ -78,6 +78,7 @@ def test_indexer_output_round_trips_through_a_real_branch_index_row(
         branch_name="main",
         head_sha="a" * 40,
         storage_dir=tmp_path / ".graphs",
+        signing_key=b"k" * 32,
     )
 
     fields = store.to_branch_index_fields(
@@ -108,5 +109,5 @@ def test_indexer_output_round_trips_through_a_real_branch_index_row(
     assert isinstance(fetched.unresolved_symbols, list)
 
     # And the blob it points at is really loadable back into a graph.
-    reloaded_graph = store.load_graph(graph_path)
+    reloaded_graph = store.load_graph(graph_path, signing_key=b"k" * 32)
     assert reloaded_graph.num_nodes() == result.node_count

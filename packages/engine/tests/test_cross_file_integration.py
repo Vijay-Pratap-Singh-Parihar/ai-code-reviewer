@@ -15,7 +15,7 @@ just that mocked pieces individually work.
 Same real cross-file relationship Stage 6's integration test hand-verified
 by reading the source directly: `api.services.repositories
 .get_or_create_repository` has exactly one resolved caller in this
-repository, `api.services.branch_index.trigger_index_build`.
+repository, `api.services.analysis.create_analysis_run`.
 """
 
 import json
@@ -27,7 +27,7 @@ from revu.index.graph import IndexResult
 from revu.providers.llm import CompletionResult, ToolCall
 
 CHANGED_FILE = "apps/api/src/api/services/repositories.py"
-CALLER_FILE = "apps/api/src/api/services/branch_index.py"
+CALLER_FILE = "apps/api/src/api/services/analysis.py"
 
 _CHANGED_LINE = (
     "+    repo = await session.scalar("
@@ -113,10 +113,10 @@ async def test_agent_uses_find_callers_then_read_file_then_cites_real_evidence(
         if rounds == ["find_callers"]:
             # The real graph must have found the real caller.
             caller_names = [c["qualified_name"] for c in tool_result["callers"]]
-            assert "api.services.branch_index.trigger_index_build" in caller_names
+            assert "api.services.analysis.create_analysis_run" in caller_names
             caller = next(
                 c for c in tool_result["callers"]
-                if c["qualified_name"] == "api.services.branch_index.trigger_index_build"
+                if c["qualified_name"] == "api.services.analysis.create_analysis_run"
             )
             assert caller["file_path"] == CALLER_FILE
 

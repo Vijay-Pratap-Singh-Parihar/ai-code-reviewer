@@ -5,31 +5,6 @@ from db.branch_index import BranchIndexStatus, IndexUpdateMode
 from pydantic import BaseModel, Field
 
 
-class IndexTriggerRequest(BaseModel):
-    """Trigger a branch-index build. Like `AnalysisRequest` (Stage 3), the
-    caller supplies what the server would otherwise have to fetch from
-    GitHub itself — here, a filesystem path to a git repository the worker
-    process can read (there is no real webhook/App integration until Stage
-    10; see IMPLEMENTATION_PLAN.md's stage map). `repo_path` therefore needs
-    to be a path inside the *worker's* filesystem, not necessarily the
-    caller's — for the Docker-composed deployment that means a path inside
-    the worker container, not the host.
-    """
-
-    repo_full_name: str = Field(min_length=1, max_length=255, examples=["acme/widgets"])
-    branch_name: str = Field(default="main", min_length=1, max_length=255)
-    repo_path: str = Field(min_length=1, examples=["/tmp/acme-widgets"])
-    target_sha: str | None = Field(default=None, min_length=7, max_length=40)
-    force_full: bool = Field(
-        default=False,
-        description=(
-            "Force a full rebuild even if the update would otherwise be a safe "
-            "fast-forward incremental update. This is also the manual-rebuild "
-            "trigger the future Branch Memory screen calls."
-        ),
-    )
-
-
 class IndexUpdateLogPublic(BaseModel):
     mode: IndexUpdateMode
     from_sha: str | None

@@ -1,14 +1,12 @@
 """Real-Postgres, real-FastAPI-app tests for the branch-memory endpoints,
 same `api_client` pattern as `test_analysis.py`.
 
-The worker job itself (`worker.jobs.index_branch.update_branch_index`) is
-not exercised here — Redis is faked (`FakeRedisPool`, from `conftest.py`),
-same as `test_analysis.py`'s enqueue assertions — so these tests only prove
-the API/service-layer row lifecycle: trigger creates a `pending` row and
-enqueues the right job, and the status endpoint's staleness logic never
-exposes a `building` row's data. The worker's own state-machine behaviour
-(status transitions, force-push detection, incremental vs. full) is covered
-by `apps/worker/tests/test_index_branch.py` against a real git repo.
+Builds are queued through `POST /repos/{repo_id}/index` for GitHub-connected
+repos (covered in `test_github.py`); these tests prove the status endpoint's
+staleness logic never exposes a `building` row's data, and its org scoping.
+The worker's own state-machine behaviour (status transitions, force-push
+detection, incremental vs. full) is covered by
+`apps/worker/tests/test_index_branch.py` against a real git repo.
 """
 
 import uuid
@@ -34,96 +32,42 @@ def _auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _trigger_payload(**overrides: object) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "repo_full_name": "acme/widgets",
-        "branch_name": "main",
-        "repo_path": "/tmp/acme-widgets",
-    }
-    payload.update(overrides)
-    return payload
-
-
-async def test_trigger_index_creates_pending_row_and_enqueues_job(api_client: AsyncClient) -> None:
-    token = await _signup_and_get_token(api_client, "trigger-index@example.com")
-
-    response = await api_client.post(
-        "/repos/index", json=_trigger_payload(), headers=_auth_header(token)
-    )
-
-    assert response.status_code == 202, response.text
-    body = response.json()
-    assert body["status"] == "pending"
-    assert body["branch_name"] == "main"
-    assert body["head_sha"] is None
-    assert uuid.UUID(body["id"])
-    assert uuid.UUID(body["repo_id"])
-
-    enqueued = api_client.fake_redis_pool.enqueued  # type: ignore[attr-defined]
-    assert len(enqueued) == 1
-    function_name, args = enqueued[0]
-    assert function_name == "update_branch_index"
-    assert args[0] == body["id"]
-    assert args[1] == "/tmp/acme-widgets"
-    assert args[2] is None  # no target_sha pinned
-    assert args[3] is False  # force_full defaults to False
-
-
-async def test_trigger_index_passes_through_target_sha_and_force_full(
-    api_client: AsyncClient,
-) -> None:
-    token = await _signup_and_get_token(api_client, "trigger-index-2@example.com")
-
-    response = await api_client.post(
-        "/repos/index",
-        json=_trigger_payload(target_sha="a" * 40, force_full=True),
+async def _create_repo(client: AsyncClient, token: str) -> str:
+    """Registers `acme/widgets` under the caller's org through the manual
+    diff-only flow and returns its id."""
+    response = await client.post(
+        "/analysis",
+        json={
+            "repo_full_name": "acme/widgets",
+            "head_sha": "abc1234",
+            "pr_number": 1,
+            "pr_title": "t",
+            "diff": "--- a/x\n+++ b/x\n",
+        },
         headers=_auth_header(token),
     )
-
     assert response.status_code == 202, response.text
-    enqueued = api_client.fake_redis_pool.enqueued  # type: ignore[attr-defined]
-    _function_name, args = enqueued[0]
-    assert args[2] == "a" * 40
-    assert args[3] is True
+    repos = await client.get("/repos", headers=_auth_header(token))
+    repo_id: str = repos.json()[0]["id"]
+    return repo_id
 
 
-async def test_trigger_index_requires_auth(api_client: AsyncClient) -> None:
-    response = await api_client.post("/repos/index", json=_trigger_payload())
-    assert response.status_code == 401
-
-
-async def test_trigger_index_rejects_missing_repo_path(api_client: AsyncClient) -> None:
-    token = await _signup_and_get_token(api_client, "bad-index-payload@example.com")
-    payload = _trigger_payload()
-    payload["repo_path"] = ""
-    response = await api_client.post("/repos/index", json=payload, headers=_auth_header(token))
-    assert response.status_code == 422
-
-
-async def test_trigger_index_conflicts_when_repo_owned_by_another_org(
-    api_client: AsyncClient,
-) -> None:
-    token_a = await _signup_and_get_token(api_client, "index-conflict-a@example.com")
-    first = await api_client.post(
-        "/repos/index", json=_trigger_payload(), headers=_auth_header(token_a)
+async def test_manual_index_endpoint_with_worker_path_is_gone(api_client: AsyncClient) -> None:
+    """Regression: `POST /repos/index` took a `repo_path` on the worker's
+    filesystem, letting any user make the worker read any directory."""
+    token = await _signup_and_get_token(api_client, "manual-index@example.com")
+    response = await api_client.post(
+        "/repos/index",
+        json={"repo_full_name": "acme/widgets", "repo_path": "/data/repos"},
+        headers=_auth_header(token),
     )
-    assert first.status_code == 202
-
-    token_b = await _signup_and_get_token(api_client, "index-conflict-b@example.com")
-    second = await api_client.post(
-        "/repos/index", json=_trigger_payload(), headers=_auth_header(token_b)
-    )
-    assert second.status_code == 409
+    assert response.status_code in (404, 405)
+    assert api_client.fake_redis_pool.enqueued == []  # type: ignore[attr-defined]
 
 
-async def test_get_branch_index_reports_no_index_yet_before_any_build_completes(
-    api_client: AsyncClient,
-) -> None:
+async def test_get_branch_index_reports_no_index_yet(api_client: AsyncClient) -> None:
     token = await _signup_and_get_token(api_client, "status-none@example.com")
-    trigger = await api_client.post(
-        "/repos/index", json=_trigger_payload(), headers=_auth_header(token)
-    )
-    repo_id = trigger.json()["repo_id"]
+    repo_id = await _create_repo(api_client, token)
 
     response = await api_client.get(
         f"/repos/{repo_id}/branches/main/index", headers=_auth_header(token)
@@ -133,8 +77,8 @@ async def test_get_branch_index_reports_no_index_yet_before_any_build_completes(
     body = response.json()
     assert body["has_ready_index"] is False
     assert body["head_sha"] is None
-    assert body["latest_attempt_status"] == "pending"
-    assert body["is_stale"] is False  # nothing to be stale relative to yet
+    assert body["latest_attempt_status"] is None
+    assert body["is_stale"] is False
 
 
 async def test_get_branch_index_requires_auth(api_client: AsyncClient) -> None:
@@ -152,10 +96,7 @@ async def test_get_branch_index_unknown_repo_returns_404(api_client: AsyncClient
 
 async def test_get_branch_index_from_another_org_returns_404(api_client: AsyncClient) -> None:
     token_a = await _signup_and_get_token(api_client, "status-org-a@example.com")
-    trigger = await api_client.post(
-        "/repos/index", json=_trigger_payload(), headers=_auth_header(token_a)
-    )
-    repo_id = trigger.json()["repo_id"]
+    repo_id = await _create_repo(api_client, token_a)
 
     token_b = await _signup_and_get_token(api_client, "status-org-b@example.com")
     response = await api_client.get(
@@ -179,10 +120,7 @@ async def test_get_branch_index_returns_ready_row_and_flags_stale_during_rebuild
     `apps/worker/tests/test_index_branch.py`).
     """
     token = await _signup_and_get_token(api_client, "staleness@example.com")
-    trigger = await api_client.post(
-        "/repos/index", json=_trigger_payload(), headers=_auth_header(token)
-    )
-    repo_id = uuid.UUID(trigger.json()["repo_id"])
+    repo_id = uuid.UUID(await _create_repo(api_client, token))
 
     # `created_at` is set explicitly (not left to the DB's `now()`): Postgres's
     # `now()` is transaction-scoped, and this whole test runs inside one
@@ -210,8 +148,7 @@ async def test_get_branch_index_returns_ready_row_and_flags_stale_during_rebuild
         await session.commit()
 
         # A *new* row, inserted after `ready_row` succeeded, simulating a
-        # rebuild that started later (the originally-triggered `pending` row
-        # from before `ready_row` existed is older and must stay irrelevant).
+        # rebuild that started later.
         building_row = BranchIndex(
             repo_id=repo_id,
             branch_name="main",

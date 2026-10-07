@@ -40,6 +40,8 @@ def _commit(repo: Repo, filename: str, content: str, message: str) -> str:
     return repo.index.commit(message).hexsha
 
 
+KEY = b"k" * 32
+
 # --------------------------------------------------------------------------
 # `_decide_and_build` — pure decision logic, no database.
 # --------------------------------------------------------------------------
@@ -56,6 +58,8 @@ def test_decide_and_build_first_build_is_full(tmp_path: Path) -> None:
         target_sha=sha,
         previous=None,
         force_full=False,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
     )
 
     assert mode == IndexUpdateMode.FULL
@@ -64,15 +68,7 @@ def test_decide_and_build_first_build_is_full(tmp_path: Path) -> None:
     assert files_changed == result.files_indexed
 
 
-def test_decide_and_build_fast_forward_is_incremental(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # `_decide_and_build` looks up the previous result blob via
-    # `index_result_path`'s env-based default storage dir (it has no
-    # storage_dir parameter of its own — see its docstring), so the saved
-    # blob must live where that default lookup will find it.
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / ".blobs"))
-
+def test_decide_and_build_fast_forward_is_incremental(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path)
     sha_1 = _commit(repo, "a.py", "def f():\n    return 1\n", "first")
     sha_2 = _commit(repo, "a.py", "def f():\n    return 2\n", "second")
@@ -82,7 +78,8 @@ def test_decide_and_build_fast_forward_is_incremental(
 
     old_result = build_index(tmp_path, sha_1)
     save_index_result(
-        old_result, repo_identifier="acme/widgets", branch_name="main", head_sha=sha_1
+        old_result, repo_identifier="acme/widgets", branch_name="main", head_sha=sha_1,
+        storage_dir=tmp_path / ".blobs", signing_key=KEY,
     )
     previous = BranchIndex(
         repo_id=None, branch_name="main", head_sha=sha_1, status=BranchIndexStatus.READY
@@ -95,6 +92,8 @@ def test_decide_and_build_fast_forward_is_incremental(
         target_sha=sha_2,
         previous=previous,
         force_full=False,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
     )
 
     assert mode == IndexUpdateMode.INCREMENTAL
@@ -119,6 +118,8 @@ def test_decide_and_build_force_full_overrides_fast_forward(tmp_path: Path) -> N
         target_sha=sha_2,
         previous=previous,
         force_full=True,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
     )
 
     assert mode == IndexUpdateMode.FULL
@@ -145,6 +146,8 @@ def test_decide_and_build_non_fast_forward_forces_full_rebuild(tmp_path: Path) -
         target_sha=rewritten_sha,
         previous=previous,
         force_full=False,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
     )
 
     assert mode == IndexUpdateMode.FULL
@@ -173,6 +176,8 @@ def test_decide_and_build_falls_back_to_full_when_previous_blob_is_missing(
         target_sha=sha_2,
         previous=previous,
         force_full=False,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
     )
 
     assert mode == IndexUpdateMode.FULL
@@ -224,7 +229,6 @@ async def test_update_branch_index_first_build_succeeds_and_is_full(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / "blobs"))
     repo_dir = tmp_path / "repo"
     git_repo = _init_repo(repo_dir)
     sha = _commit(git_repo, "a.py", "def f():\n    return 1\n", "first")
@@ -241,6 +245,11 @@ async def test_update_branch_index_first_build_succeeds_and_is_full(
     assert row.node_count >= 1
     assert row.graph_ref is not None
     assert row.built_at is not None
+    # Written under this repository's own index directory, never a shared one.
+    storage = worker_ctx["storage"]
+    repo = await worker_db_session.get(Repository, row.repo_id)
+    assert repo is not None
+    assert Path(row.graph_ref).parent == storage.index_dir(repo.org_id, repo.id)
 
     logs = await _logs_for(worker_db_session, row.id)
     assert len(logs) == 1
@@ -255,7 +264,6 @@ async def test_update_branch_index_second_build_is_incremental(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / "blobs"))
     repo_dir = tmp_path / "repo"
     git_repo = _init_repo(repo_dir)
     sha_1 = _commit(git_repo, "a.py", "def f():\n    return 1\n", "first")
@@ -296,7 +304,6 @@ async def test_update_branch_index_detects_force_push_and_does_a_full_rebuild(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / "blobs"))
     repo_dir = tmp_path / "repo"
     git_repo = _init_repo(repo_dir)
     sha_1 = _commit(git_repo, "a.py", "def f():\n    return 1\n", "first")
@@ -338,7 +345,6 @@ async def test_update_branch_index_resolves_branch_head_when_no_sha_given(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / "blobs"))
     repo_dir = tmp_path / "repo"
     git_repo = _init_repo(repo_dir)
     sha = _commit(git_repo, "a.py", "def f():\n    return 1\n", "first")
@@ -361,7 +367,6 @@ async def test_update_branch_index_marks_failed_on_build_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / "blobs"))
     not_a_repo = tmp_path / "not-a-git-repo"
     not_a_repo.mkdir()
 
@@ -386,7 +391,6 @@ async def test_update_branch_index_persists_unresolved_symbols(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("REVU_INDEX_STORAGE_DIR", str(tmp_path / "blobs"))
     repo_dir = tmp_path / "repo"
     git_repo = _init_repo(repo_dir)
     # `undefined_thing()` has no definition anywhere this indexer can see —
@@ -416,3 +420,38 @@ async def test_update_branch_index_returns_early_when_row_missing(
     await index_branch.update_branch_index(
         worker_ctx, "00000000-0000-0000-0000-000000000000", "/nonexistent", "a" * 40, False
     )
+
+
+def test_decide_and_build_rebuilds_fully_when_previous_blob_fails_its_signature(
+    tmp_path: Path,
+) -> None:
+    """A previous blob signed under another key (another deployment, or
+    tampered with) is never unpickled; the build falls back to full."""
+    repo = _init_repo(tmp_path)
+    sha_1 = _commit(repo, "a.py", "def f():\n    return 1\n", "first")
+    sha_2 = _commit(repo, "a.py", "def f():\n    return 2\n", "second")
+
+    from revu.index.graph import build_index
+    from revu.index.store import save_index_result
+
+    save_index_result(
+        build_index(tmp_path, sha_1), repo_identifier="acme/widgets", branch_name="main",
+        head_sha=sha_1, storage_dir=tmp_path / ".blobs", signing_key=b"other-key" * 4,
+    )
+    previous = BranchIndex(
+        repo_id=None, branch_name="main", head_sha=sha_1, status=BranchIndexStatus.READY
+    )
+
+    mode, reason, _result, _files_changed = index_branch._decide_and_build(
+        tmp_path,
+        repo_identifier="acme/widgets",
+        branch_name="main",
+        target_sha=sha_2,
+        previous=previous,
+        force_full=False,
+        storage_dir=tmp_path / ".blobs",
+        signing_key=KEY,
+    )
+
+    assert mode == IndexUpdateMode.FULL
+    assert reason is not None and "previous index snapshot unavailable" in reason
