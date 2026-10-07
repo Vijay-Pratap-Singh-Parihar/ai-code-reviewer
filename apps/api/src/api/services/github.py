@@ -39,6 +39,7 @@ from db.audit import AuditAction, record_audit
 from db.branch_index import BranchIndex, BranchIndexStatus
 from db.github import WebhookDelivery
 from db.organization import GithubInstallation
+from db.provider import ModelRoute, ModelTier
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
 from db.repository import Repository
 from db.tenancy import bind_org
@@ -47,7 +48,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.core.config import get_settings
+from api.services.providers import route_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -354,13 +355,14 @@ async def queue_github_review(
     actor_id: uuid.UUID | None = None,
     repo_full_name: str = "",
 ) -> AnalysisRun:
+    model = await route_snapshot(session, pr.org_id, ModelTier.REVIEW)
     run = AnalysisRun(
         pr_id=pr.id,
         org_id=pr.org_id,
         branch_index_id=branch_index_id,
         config_snapshot={
             "agent": agent,
-            "model": get_settings().revu_model_review,
+            **model,
             "head_sha": pr.head_sha,
             "trigger": trigger,
             "source": "github",
@@ -383,6 +385,15 @@ async def queue_github_review(
     await session.commit()
     await redis.enqueue_job("review_github_pr", str(run.id), str(run.org_id))
     return run
+
+
+async def has_review_route(session: AsyncSession, org_id: uuid.UUID) -> bool:
+    route = await session.scalar(
+        select(ModelRoute.id).where(
+            ModelRoute.org_id == org_id, ModelRoute.tier == ModelTier.REVIEW
+        )
+    )
+    return route is not None
 
 
 async def _already_reviewed(session: AsyncSession, pr: PullRequest) -> bool:
@@ -422,6 +433,9 @@ async def _handle_pull_request(
     if await _already_reviewed(session, pr):
         await session.commit()
         return WebhookOutcome("processed", "this head commit was already reviewed")
+    if not await has_review_route(session, pr.org_id):
+        await session.commit()
+        return WebhookOutcome("processed", "no AI provider is configured for reviews")
 
     # Auto-review always uses the cheaper diff-only reviewer; the deeper
     # cross-file review is an explicit, per-PR choice in the UI.

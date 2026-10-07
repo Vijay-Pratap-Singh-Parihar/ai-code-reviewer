@@ -3,6 +3,7 @@ import uuid
 from api.core.security import decode_access_token
 from api.db.session import get_db
 from api.main import app
+from api.testing import configure_review_model
 from db.pull_request import AnalysisRun, FindingRecord
 from db.tenancy import bind_org
 from httpx import AsyncClient
@@ -16,6 +17,8 @@ async def _signup_and_get_token(client: AsyncClient, email: str) -> str:
     )
     assert response.status_code == 201, response.text
     token: str = response.json()["access_token"]
+    # Reviews refuse to queue until the organisation has chosen a model.
+    await configure_review_model(client, {"Authorization": f"Bearer {token}"})
     return token
 
 
@@ -63,6 +66,54 @@ async def test_trigger_analysis_creates_queued_run_and_enqueues_job(
     # reads everything else back from the rows this request wrote.
     assert args[0] == body["id"]
     assert len(args) == 2 and uuid.UUID(str(args[1]))
+
+
+async def test_trigger_analysis_needs_a_configured_review_model(
+    api_client: AsyncClient,
+) -> None:
+    """No environment-variable fallback: without a review model chosen on the
+    AI Providers screen, nothing is queued."""
+    response = await api_client.post(
+        "/auth/signup",
+        json={
+            "org_name": "No Model",
+            "email": "nomodel@example.com",
+            "password": "correct-horse-battery",
+        },
+    )
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+    queued = await api_client.post("/analysis", json=_analysis_payload(), headers=headers)
+
+    assert queued.status_code == 409
+    assert "AI Providers" in queued.json()["detail"]
+    assert api_client.fake_redis_pool.enqueued == []  # type: ignore[attr-defined]
+
+
+async def test_a_run_records_which_provider_and_model_it_uses_but_no_secret(
+    api_client: AsyncClient,
+) -> None:
+    from api.core.security import decode_access_token
+    from api.db.session import get_db
+    from api.main import app
+    from db.pull_request import AnalysisRun
+    from db.tenancy import bind_org
+
+    token = await _signup_and_get_token(api_client, "snapshot@example.com")
+    created = await api_client.post(
+        "/analysis", json=_analysis_payload(), headers=_auth_header(token)
+    )
+
+    async for session in app.dependency_overrides[get_db]():
+        await bind_org(session, decode_access_token(token).org_id)
+        run = await session.get(AnalysisRun, uuid.UUID(created.json()["id"]))
+        assert run is not None
+        snapshot = run.config_snapshot
+        assert snapshot["provider_name"] == "Local test model"
+        assert snapshot["provider_kind"] == "openai_compatible"
+        assert snapshot["model"] == "test-model"
+        assert "api_key" not in snapshot and "base_url" not in snapshot
+        break
 
 
 async def test_trigger_analysis_requires_auth(api_client: AsyncClient) -> None:
@@ -148,9 +199,7 @@ async def test_same_repo_name_in_two_orgs_gives_each_its_own_isolated_copy(
     assert [r["full_name"] for r in repos_b] == ["acme/widgets"]
     assert repos_a[0]["id"] != repos_b[0]["id"]
 
-    cross = await api_client.get(
-        f"/analysis/{run_a.json()['id']}", headers=_auth_header(token_b)
-    )
+    cross = await api_client.get(f"/analysis/{run_a.json()['id']}", headers=_auth_header(token_b))
     assert cross.status_code == 404
 
 

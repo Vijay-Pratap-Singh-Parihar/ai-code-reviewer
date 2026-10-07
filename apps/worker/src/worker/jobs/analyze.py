@@ -13,19 +13,19 @@ from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
 from revu.index.store import load_graph
 from revu.models import Finding
+from revu.providers.llm import ModelEndpoint
 from revu.verify import verify_findings
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from worker.providers import ProviderAccess, endpoint_for_run, provider_access_from_ctx
 from worker.storage import TenantStorage
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-5"
-
 
 async def _run_cross_file(
     *, run: AnalysisRun, session: AsyncSession, repo: Repository, storage: TenantStorage,
-    pr_title: str, pr_body: str, diff: str, repo_path: str, model: str,
+    pr_title: str, pr_body: str, diff: str, repo_path: str, model: ModelEndpoint,
 ) -> list[Finding]:
     """The `agent="cross_file"` path: load the graph the caller's already-`ready`
     branch index built (validated at request time by
@@ -76,13 +76,22 @@ async def execute_review(
     agent: str,
     repo_path: str | None,
     storage: TenantStorage | None,
+    provider_access: ProviderAccess,
 ) -> None:
     """The part of a review shared by every trigger path: run the selected
     reviewer on an already-`running` run, then persist findings and mark it
     succeeded, or record the error and mark it failed."""
-    model = str(run.config_snapshot.get("model", _DEFAULT_MODEL))
-
     try:
+        model = await endpoint_for_run(session, run, provider_access)
+        if agent == "cross_file" and not model.supports_tools:
+            # The cross-file agent works by calling tools; a model that can't
+            # (found by "Test connection") gets the diff-only review instead,
+            # and the run says so rather than failing or silently degrading.
+            agent = "diff_only"
+            run.config_snapshot = {
+                **run.config_snapshot,
+                "agent_fallback": "diff_only: the configured model can't call tools",
+            }
         if agent == "cross_file":
             if not repo_path or storage is None:
                 raise RuntimeError("agent='cross_file' requires a checkout of the repository")
@@ -167,4 +176,5 @@ async def analyze_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> None:
         await execute_review(
             session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "",
             diff=run.diff_text, agent="diff_only", repo_path=None, storage=None,
+            provider_access=provider_access_from_ctx(ctx),
         )

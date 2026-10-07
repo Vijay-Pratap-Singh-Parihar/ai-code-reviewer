@@ -40,6 +40,11 @@ class AuditAction(enum.StrEnum):
     INDEX_REQUESTED = "index.requested"
     DATA_DELETION_REQUESTED = "data.deletion_requested"
     DATA_PURGED = "data.purged"
+    PROVIDER_CREATED = "ai_provider.created"
+    PROVIDER_UPDATED = "ai_provider.updated"
+    PROVIDER_DELETED = "ai_provider.deleted"
+    PROVIDER_TESTED = "ai_provider.tested"
+    MODEL_ROUTES_CHANGED = "model_routes.changed"
 
 
 def record_audit(

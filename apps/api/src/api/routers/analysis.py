@@ -9,6 +9,7 @@ from api.core.deps import CurrentUser, RedisPool
 from api.db.session import get_db
 from api.schemas.analysis import AnalysisRequest, AnalysisRunPublic, FindingPublic
 from api.services import analysis as analysis_service
+from api.services.providers import NO_REVIEW_MODEL, NoModelRouteError
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -42,7 +43,10 @@ async def trigger_analysis(
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: RedisPool,
 ) -> AnalysisRunPublic:
-    run = await analysis_service.create_analysis_run(db, user=user, body=body)
+    try:
+        run = await analysis_service.create_analysis_run(db, user=user, body=body)
+    except NoModelRouteError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NO_REVIEW_MODEL) from exc
 
     # Only the run id and its organisation cross the queue: the worker binds
     # its session to that organisation and reads the diff, title and body

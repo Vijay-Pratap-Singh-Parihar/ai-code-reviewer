@@ -57,7 +57,7 @@ Open `.env` and set:
 |---|---|---|
 | `JWT_SECRET_KEY` | Any long random string (command is in the file's comments) | Yes, before using it anywhere but your laptop |
 | `CREDENTIAL_ENCRYPTION_KEY` | A Fernet key (command is in the file's comments). **Never change it afterwards**: it encrypts the stored GitHub App credentials | Yes, before using it anywhere but your laptop |
-| `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` | Your LLM key | Only to run real reviews |
+| LLM keys | Nothing here: add a provider (Anthropic, OpenAI, Groq or a local Ollama) on the **AI Providers** screen | Only to run real reviews |
 | `GITHUB_*` | Leave blank | No. The GitHub App is created from inside the app with one click |
 
 ```bash
