@@ -53,11 +53,16 @@ const NAV_ITEMS = [
     icon: Plug,
     isActive: (path: string) => path.startsWith("/github"),
   },
+  {
+    title: "AI Providers",
+    href: "/providers",
+    icon: Cpu,
+    isActive: (path: string) => path.startsWith("/providers"),
+  },
 ];
 
 const PLANNED_ITEMS = [
   { title: "Branch Memory", icon: Network },
-  { title: "AI Providers", icon: Cpu },
   { title: "Usage & Budget", icon: Wallet },
   { title: "History", icon: History },
 ];

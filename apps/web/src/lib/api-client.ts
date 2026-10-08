@@ -436,3 +436,134 @@ export function formatApiError(err: unknown): string {
   if (err instanceof Error) return err.message;
   return "Something went wrong. Please try again.";
 }
+
+// --- AI providers ------------------------------------------------------------
+
+export type ProviderKind =
+  | "anthropic"
+  | "openai"
+  | "groq"
+  | "openai_compatible"
+  | "bedrock"
+  | "azure"
+  | "vertex";
+
+export type ModelTier = "screen" | "review" | "verify";
+
+export type ProviderKindInfo = {
+  kind: ProviderKind;
+  label: string;
+  needs_api_key: boolean;
+  needs_base_url: boolean;
+  default_base_url: string | null;
+  available: boolean;
+};
+
+export type ProviderSettings = {
+  supports_tools?: boolean | null;
+  supports_json?: boolean | null;
+  context_window?: number | null;
+  input_cost_per_mtok?: number | null;
+  output_cost_per_mtok?: number | null;
+};
+
+/** A provider as the API returns it: never the key, only a hint. */
+export type ProviderPublic = {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  kind_label: string;
+  base_url: string | null;
+  effective_base_url: string | null;
+  key_hint: string | null;
+  has_api_key: boolean;
+  header_names: string[];
+  settings: ProviderSettings;
+  verified_at: string | null;
+  last_test_error: string | null;
+  created_at: string;
+  updated_at: string | null;
+  used_by: ModelTier[];
+};
+
+export type ProviderCreate = {
+  name: string;
+  kind: ProviderKind;
+  base_url?: string | null;
+  api_key?: string | null;
+  headers?: Record<string, string> | null;
+  settings?: ProviderSettings;
+};
+
+/** Absent `api_key` keeps the stored key; `""` clears it. */
+export type ProviderUpdate = Partial<Omit<ProviderCreate, "kind">>;
+
+export type ProbeResult = { ok: boolean; detail: string | null; latency_ms: number | null };
+
+export type ProviderTestResult = {
+  ok: boolean;
+  model: string;
+  reply: ProbeResult;
+  json_mode: ProbeResult;
+  tool_calling: ProbeResult;
+  cost_usd: number;
+};
+
+export type ModelRoutePublic = {
+  tier: ModelTier;
+  provider_id: string;
+  provider_name: string;
+  model: string;
+  updated_at: string | null;
+};
+
+export type RouteUpdate = Partial<Record<ModelTier, { provider_id: string; model: string } | null>>;
+
+export function listProviderKinds(): Promise<ProviderKindInfo[]> {
+  return apiFetchJson<ProviderKindInfo[]>("/providers/kinds");
+}
+
+export function listProviders(): Promise<ProviderPublic[]> {
+  return apiFetchJson<ProviderPublic[]>("/providers");
+}
+
+export function createProvider(body: ProviderCreate): Promise<ProviderPublic> {
+  return apiFetchJson<ProviderPublic>("/providers", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function updateProvider(id: string, body: ProviderUpdate): Promise<ProviderPublic> {
+  return apiFetchJson<ProviderPublic>(`/providers/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+
+/** 204 No Content on success; errors carry the API's detail like every call. */
+export async function deleteProvider(id: string): Promise<void> {
+  const response = await apiFetch(`/providers/${id}`, { method: "DELETE" });
+  if (!response.ok) {
+    const body = await parseJsonSafely(response);
+    const detail =
+      body !== null && typeof body === "object" && "detail" in body ? (body as { detail: unknown }).detail : body;
+    throw new ApiError(response.status, detail);
+  }
+}
+
+export function testProvider(id: string, model: string): Promise<ProviderTestResult> {
+  return apiFetchJson<ProviderTestResult>(`/providers/${id}/test`, {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export function listProviderModels(id: string): Promise<{ models: string[] }> {
+  return apiFetchJson<{ models: string[] }>(`/providers/${id}/models`);
+}
+
+export function listModelRoutes(): Promise<ModelRoutePublic[]> {
+  return apiFetchJson<ModelRoutePublic[]>("/providers/routes");
+}
+
+export function setModelRoutes(routes: RouteUpdate): Promise<ModelRoutePublic[]> {
+  return apiFetchJson<ModelRoutePublic[]>("/providers/routes", {
+    method: "PUT",
+    body: JSON.stringify({ routes }),
+  });
+}
