@@ -37,6 +37,8 @@ class AuditAction(enum.StrEnum):
     REPOSITORY_DISCONNECTED = "repository.disconnected"
     REPOSITORY_SETTINGS_CHANGED = "repository.settings_changed"
     REVIEW_REQUESTED = "review.requested"
+    REVIEW_POSTED = "review.posted"
+    REVIEW_POST_FAILED = "review.post_failed"
     INDEX_REQUESTED = "index.requested"
     DATA_DELETION_REQUESTED = "data.deletion_requested"
     DATA_PURGED = "data.purged"

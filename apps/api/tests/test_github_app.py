@@ -125,7 +125,7 @@ async def test_manifest_start_builds_a_read_only_app_with_a_smee_webhook(
     assert manifest["redirect_url"] == "http://localhost:3000/github/app-created"
     assert manifest["default_permissions"] == {
         "contents": "read",
-        "pull_requests": "read",
+        "pull_requests": "write",
         "metadata": "read",
     }
     assert fake_github_app["smee"] == 1

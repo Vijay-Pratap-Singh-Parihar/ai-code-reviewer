@@ -30,6 +30,8 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   "repository.disconnected": "Repository disconnected",
   "repository.settings_changed": "Repository settings changed",
   "review.requested": "Review requested",
+  "review.posted": "Review posted to GitHub",
+  "review.post_failed": "Posting to GitHub failed",
   "index.requested": "Index build requested",
   "data.deletion_requested": "Data deletion requested",
   "data.purged": "Data deleted",

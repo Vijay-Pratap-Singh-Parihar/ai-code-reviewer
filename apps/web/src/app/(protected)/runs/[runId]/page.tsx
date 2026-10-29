@@ -4,6 +4,7 @@ import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { getAnalysisRun } from "@/lib/api-client";
+import { PostToGitHub } from "@/components/post-to-github";
 import { useRunMetadata } from "@/lib/run-metadata-store";
 import { STATUS_BADGE } from "@/lib/badges";
 import { Badge } from "@/components/ui/badge";
@@ -77,6 +78,7 @@ export default function RunPage() {
           </div>
         )}
         {data?.error && <p className="text-sm text-destructive">{data.error}</p>}
+        {data && <PostToGitHub run={data} />}
       </div>
 
       <div className="flex flex-col gap-2">

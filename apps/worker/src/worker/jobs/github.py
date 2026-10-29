@@ -25,6 +25,7 @@ from worker import repo_cache
 from worker.github import installation_token, open_client, remote_url
 from worker.jobs.analyze import execute_review, mark_run_failed, mark_run_running
 from worker.jobs.index_branch import update_branch_index
+from worker.jobs.post_review import auto_post
 from worker.providers import provider_access_from_ctx
 from worker.storage import storage_from_ctx
 
@@ -86,6 +87,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> Non
                 agent=agent, repo_path=None, storage=storage,
                 provider_access=provider_access_from_ctx(ctx),
             )
+            await auto_post(ctx, session, run)
             return
 
         try:
@@ -102,6 +104,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> Non
             )
         finally:
             await asyncio.to_thread(discard_worktree, checkout_from, worktree)
+        await auto_post(ctx, session, run)
 
 
 async def _fail_index_row(

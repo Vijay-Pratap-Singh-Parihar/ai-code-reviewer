@@ -66,6 +66,9 @@ class InstallationPublic(BaseModel):
     # for the retention job, and when the earliest of them is purged.
     disconnected_repository_count: int = 0
     purge_after: datetime | None = None
+    # Whether the installation granted `pull_requests: write`, which posting
+    # reviews to pull requests needs.
+    can_post_reviews: bool = False
 
 
 class RepositoryPublic(BaseModel):

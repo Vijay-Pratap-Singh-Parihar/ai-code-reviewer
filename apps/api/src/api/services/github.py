@@ -518,9 +518,18 @@ async def _handle_push(
 
 
 async def _handle_installation(
-    session: AsyncSession, installation: GithubInstallation, action: str | None
+    session: AsyncSession,
+    installation: GithubInstallation,
+    action: str | None,
+    payload: dict[str, Any] | None = None,
 ) -> WebhookOutcome:
     now = datetime.now(UTC)
+    # Installation events carry the installation's current permissions; keep
+    # ours in step (e.g. after `new_permissions_accepted` grants the
+    # pull_requests: write that posting reviews needs).
+    permissions = ((payload or {}).get("installation") or {}).get("permissions")
+    if isinstance(permissions, dict):
+        installation.permissions = dict(permissions)
     audit_action: AuditAction | None = None
     if action == "deleted":
         installation.uninstalled_at = now
@@ -610,7 +619,7 @@ async def handle_webhook(
     if event == "push":
         return await _handle_push(session, redis, installation, payload)
     if event == "installation":
-        return await _handle_installation(session, installation, action)
+        return await _handle_installation(session, installation, action, payload)
     if event == "installation_repositories":
         return await _handle_installation_repositories(session, installation, payload)
 

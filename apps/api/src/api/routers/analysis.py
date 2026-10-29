@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from db.pull_request import AnalysisRun, FindingRecord, PullRequest
+from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullRequest
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,10 @@ def _to_public(
         base_branch=pr.base_branch,
         head_sha=str(run.config_snapshot.get("head_sha") or pr.head_sha),
         diff=run.diff_text,
+        source=str(run.config_snapshot.get("source", "manual")),
+        github_review_url=run.github_review_url,
+        posted_at=run.posted_at,
+        post_error=run.post_error,
     )
 
 
@@ -70,5 +74,33 @@ async def get_analysis(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "analysis run not found")
 
     # get_run_for_org eager-loads findings, the PR and its repo, so this is safe.
+    pr = run.pull_request
+    return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)
+
+
+@router.post(
+    "/{run_id}/github-review",
+    response_model=AnalysisRunPublic,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def post_to_github(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: RedisPool,
+) -> AnalysisRunPublic:
+    """Queue posting a finished pull request review to GitHub as one review
+    (a comment; it never approves or blocks). Posting twice is a no-op."""
+    run = await analysis_service.get_run_for_org(db, run_id=run_id, org_id=user.org_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "analysis run not found")
+    if run.config_snapshot.get("source") != "github":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "only reviews of GitHub pull requests can be posted"
+        )
+    if run.status != AnalysisRunStatus.SUCCEEDED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "only a finished review can be posted")
+    if run.github_review_id is None:
+        await redis.enqueue_job("post_github_review", str(run.id), str(run.org_id), str(user.id))
     pr = run.pull_request
     return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)
