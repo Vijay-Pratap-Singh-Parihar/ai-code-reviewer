@@ -6,12 +6,19 @@ record at ingestion so the ledger is comparable across providers.
 """
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import litellm
+# LiteLLM downloads its model price table from GitHub on import, retrying for
+# ~20 s when offline. Use the copy it ships with instead: startup stays fast
+# and deterministic, and an air-gapped or offline deployment (a local model,
+# a demo without internet) never waits on GitHub. Set before the import.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+import litellm  # noqa: E402
 
 # Some models (e.g. Claude's newer reasoning-oriented models) only support a
 # fixed temperature and reject an explicit temperature=0.0. Providers differ

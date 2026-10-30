@@ -30,11 +30,13 @@ export function DeleteDataDialog({
   description,
   onDelete,
   triggerLabel = "Delete data now",
+  title,
 }: {
   name: string;
   description: ReactNode;
   onDelete: () => Promise<unknown>;
   triggerLabel?: string;
+  title?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
@@ -46,6 +48,8 @@ export function DeleteDataDialog({
       void queryClient.invalidateQueries({ queryKey: ["repositories"] });
       void queryClient.invalidateQueries({ queryKey: ["installations"] });
       void queryClient.invalidateQueries({ queryKey: ["audit"] });
+      void queryClient.invalidateQueries({ queryKey: ["providers"] });
+      void queryClient.invalidateQueries({ queryKey: ["model-routes"] });
     },
   });
   const inputId = `confirm-${name.replace(/[^a-z0-9]/gi, "-")}`;
@@ -67,7 +71,7 @@ export function DeleteDataDialog({
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete all data for {name}?</AlertDialogTitle>
+          <AlertDialogTitle>{title ?? `Delete all data for ${name}?`}</AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="flex flex-col gap-1.5">

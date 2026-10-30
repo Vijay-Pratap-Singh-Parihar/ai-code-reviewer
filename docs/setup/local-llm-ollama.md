@@ -86,4 +86,38 @@ Start-Process "D:\Ollama\installer\OllamaSetup.exe" -ArgumentList '/DIR="D:\Olla
 
 **How to undo.** *Settings → Apps → Installed apps → Ollama → Uninstall*, then delete `D:\Ollama` and the two user variables from step 1.
 
-<!-- Steps 4+ are appended as they are performed. -->
+---
+
+## 4. Keep half-finished downloads across restarts (`OLLAMA_NOPRUNE`)
+
+**What happened.** The first download of `qwen3.5:9b` (6.6 GB) ran at 1–2 MB/s over an unstable connection and stopped several times on DNS failures and `503` errors from Ollama's registry. `ollama pull` resumes where it stopped, and it reached 2.5 GB. After the laptop restarted, the folder was empty again: **when the Ollama server starts it deletes downloads it considers unused, including unfinished ones** (its log shows `OLLAMA_NOPRUNE:false`).
+
+**What was done.**
+
+```powershell
+[Environment]::SetEnvironmentVariable("OLLAMA_NOPRUNE", "1", "User")
+```
+
+then Ollama was restarted (`D:\Ollama\app\ollama app.exe`), and its log confirmed `OLLAMA_NOPRUNE:true`.
+
+**Why.** On a connection that drops, a large download can take several sessions. With pruning off, whatever has been downloaded survives restarts and `ollama pull` continues from there.
+
+**What it affects.** Ollama no longer cleans up blobs left behind by removed or abandoned models on its own. If you delete models later, free the space with `ollama rm <model>` (which removes its files) rather than relying on automatic cleanup. Nothing else changes.
+
+**How to undo.** `[Environment]::SetEnvironmentVariable("OLLAMA_NOPRUNE", $null, "User")` and restart Ollama.
+
+**Download command (with retries, because of the connection):**
+
+```powershell
+for ($i = 1; $i -le 300; $i++) {
+  ollama pull qwen3.5:9b
+  if ($LASTEXITCODE -eq 0) { break }
+  Start-Sleep -Seconds 30
+}
+```
+
+If the line stays unreliable, downloading on a steadier network (college Wi-Fi, a phone hotspot) is faster. A finished `D:\Ollama\models` folder can also be copied from another machine.
+
+**Note (2026-10-30).** Ollama updates itself in the background; it is now 0.40.2. The settings above (model folder, context length, no-prune) carried over unchanged.
+
+<!-- Steps 5+ are appended as they are performed. -->
