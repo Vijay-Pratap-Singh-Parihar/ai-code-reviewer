@@ -128,3 +128,26 @@
     @apply font-sans;
   }
 }
+
+/*
+ * react-diff-view ships light-only colours and leaves text to inherit, so in dark mode added
+ * lines were near-white text on pale green. The variables are set on the diff itself (not
+ * :root) so they win over the library's defaults whatever order the stylesheets load in.
+ */
+.diff {
+  --diff-text-color: var(--foreground);
+  --diff-font-family: var(--font-mono), ui-monospace, monospace;
+  --diff-selection-background-color: color-mix(in oklch, var(--ring) 40%, transparent);
+}
+
+.dark .diff {
+  --diff-gutter-insert-background-color: oklch(0.34 0.07 150);
+  --diff-code-insert-background-color: oklch(0.27 0.05 150);
+  --diff-code-insert-edit-background-color: oklch(0.42 0.09 150);
+  --diff-gutter-delete-background-color: oklch(0.34 0.08 25);
+  --diff-code-delete-background-color: oklch(0.27 0.06 25);
+  --diff-code-delete-edit-background-color: oklch(0.42 0.11 25);
+  --diff-gutter-selected-background-color: oklch(0.34 0.06 90);
+  --diff-code-selected-background-color: oklch(0.29 0.05 90);
+  --diff-omit-gutter-line-color: oklch(0.65 0.16 25);
+}
