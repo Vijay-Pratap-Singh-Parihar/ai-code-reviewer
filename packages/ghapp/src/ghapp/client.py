@@ -35,12 +35,31 @@ class GitHubError(RuntimeError):
         self.status_code = status_code
 
 
+UNREACHABLE = 503
+
+
+class _GitHubHTTP(httpx.AsyncClient):
+    """An httpx client whose network failures (DNS, refused or reset
+    connections, timeouts) surface as `GitHubError` like any refusal from
+    GitHub itself. Callers already turn `GitHubError` into a clear message
+    or a failed run; without this, "GitHub is unreachable" escaped as a raw
+    httpx exception and became an unexplained 500."""
+
+    async def send(self, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        try:
+            return await super().send(request, **kwargs)
+        except httpx.TransportError as exc:
+            raise GitHubError(
+                UNREACHABLE, f"couldn't reach {request.url.host} ({type(exc).__name__})"
+            ) from exc
+
+
 class GitHubClient:
     def __init__(
         self, config: GitHubAppConfig, *, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
         self._config = config
-        self._http = httpx.AsyncClient(
+        self._http = _GitHubHTTP(
             base_url=config.api_url,
             transport=transport,
             timeout=30.0,
@@ -180,7 +199,7 @@ async def convert_manifest_code(
     """Exchange the one-time code from the manifest flow's redirect for the
     new App's full configuration, including `id`, `slug`, `client_id`,
     `client_secret`, `webhook_secret` and `pem`. Valid once, for one hour."""
-    async with httpx.AsyncClient(
+    async with _GitHubHTTP(
         base_url=api_url,
         transport=transport,
         timeout=30.0,
@@ -197,7 +216,7 @@ async def create_smee_channel(
 ) -> str:
     """Create a webhook relay channel; smee.io answers `/new` with a redirect
     to the fresh channel URL."""
-    async with httpx.AsyncClient(transport=transport, timeout=15.0) as http:
+    async with _GitHubHTTP(transport=transport, timeout=15.0) as http:
         response = await http.get(f"{smee_url.rstrip('/')}/new", follow_redirects=False)
     location = str(response.headers.get("location", ""))
     if not response.is_redirect or not location.startswith(smee_url.rstrip("/") + "/"):
