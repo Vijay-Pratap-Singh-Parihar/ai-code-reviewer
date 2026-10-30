@@ -109,7 +109,7 @@ describe("signup/login request shapes", () => {
     vi.restoreAllMocks();
   });
 
-  it("signup posts org_name/email/password to /auth/signup", async () => {
+  it("signup posts the organization, the person's name and their login to /auth/signup", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse(201, {
         access_token: "t",
@@ -120,12 +120,20 @@ describe("signup/login request shapes", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    await signup({ org_name: "Acme", email: "a@b.com", password: "correct-horse-battery" });
+    await signup({
+      org_name: "Acme",
+      first_name: "Ada",
+      last_name: "Lovelace",
+      email: "a@b.com",
+      password: "correct-horse-battery",
+    });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("/auth/signup");
     expect(JSON.parse(init.body as string)).toEqual({
       org_name: "Acme",
+      first_name: "Ada",
+      last_name: "Lovelace",
       email: "a@b.com",
       password: "correct-horse-battery",
     });

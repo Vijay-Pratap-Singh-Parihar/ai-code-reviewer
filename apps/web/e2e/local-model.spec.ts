@@ -11,12 +11,10 @@ import { expect, test } from "@playwright/test";
  *
  *   E2E_OLLAMA=1 npx playwright test e2e/local-model.spec.ts
  *
- * OLLAMA_URL is the endpoint as the API (not the browser) reaches it:
- * http://127.0.0.1:11434/v1 for a natively run API, the default
- * http://host.docker.internal:11434/v1 when the API runs in Docker.
+ * The "Ollama on this machine" preset already uses the host the API can
+ * reach (Docker or not); set OLLAMA_URL only for Ollama elsewhere.
  */
 
-const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://host.docker.internal:11434/v1";
 const MODEL = process.env.OLLAMA_MODEL ?? "qwen3.5:4b";
 const STAMP = Date.now();
 const ORG_NAME = `Playwright local model ${STAMP}`;
@@ -55,6 +53,8 @@ test.afterAll(() => {
 
 test("a local model, configured only from the UI, reviews a diff with thinking off", async ({ page }) => {
   await page.goto("/signup");
+  await page.getByLabel("First name").fill("Playwright");
+  await page.getByLabel("Last name").fill("Tester");
   await page.getByLabel("Organization name").fill(ORG_NAME);
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password").fill(PASSWORD);
@@ -67,28 +67,31 @@ test("a local model, configured only from the UI, reviews a diff with thinking o
   const form = page.getByRole("dialog");
   await form.getByRole("combobox", { name: "Provider" }).click();
   await page.getByRole("option", { name: /OpenAI-compatible/ }).click();
-  await form.getByLabel("Name").fill("Local Ollama");
-  await form.getByLabel("Endpoint URL").fill(OLLAMA_URL);
+  // The preset carries the host the API can reach, and names the provider.
+  await form.getByRole("button", { name: "Ollama on this machine" }).click();
+  await expect(form.getByLabel("Display name")).toHaveValue("Local Ollama");
+  if (process.env.OLLAMA_URL) await form.getByLabel("Endpoint URL").fill(process.env.OLLAMA_URL);
   await form.getByRole("button", { name: "Add provider" }).click();
   await expect(form).toBeHidden();
 
-  // 2. Test it with the model: it must reply and return JSON.
+  // 2. Test it, picking the model from the list the server reports, with
+  // thinking off (the default for a local model); each call shows live.
   await page.getByRole("button", { name: "Test" }).click();
   const tester = page.getByRole("dialog");
-  await tester.getByLabel("Model").fill(MODEL);
+  await tester.getByLabel("Model", { exact: true }).click();
+  await page.getByRole("option", { name: MODEL, exact: true }).click();
+  await expect(tester.getByRole("combobox", { name: "Thinking" })).toContainText("Off (fastest)");
   await tester.getByRole("button", { name: "Run test" }).click();
+  await expect(tester.getByRole("button", { name: "Stop" })).toBeVisible();
   await expect(tester.getByText("Ready for reviews.")).toBeVisible({ timeout: 5 * 60_000 });
-  await page.keyboard.press("Escape");
+  await expect(tester.getByLabel("passed").first()).toBeVisible();
 
-  // 3. Route reviews to it, thinking off.
-  await page.getByRole("combobox", { name: "Review provider" }).click();
-  await page.getByRole("option", { name: "Local Ollama" }).click();
-  await page.getByLabel("Review model").fill(MODEL);
-  await page.getByRole("combobox", { name: "Review thinking" }).click();
-  await page.getByRole("option", { name: "Off (fastest)" }).click();
-  await page.getByRole("button", { name: "Save models" }).click();
-  await expect(page.getByText("Saved.")).toBeVisible();
+  // 3. Route reviews to it straight from the result.
+  await tester.getByRole("button", { name: "Use for reviews" }).click();
+  await expect(tester.getByText(`Reviews now use ${MODEL}`)).toBeVisible();
+  await page.keyboard.press("Escape");
   await page.reload();
+  await expect(page.getByLabel("Review model")).toHaveValue(MODEL);
   await expect(page.getByRole("combobox", { name: "Review thinking" })).toContainText("Thinking: Off (fastest)");
 
   // 4. A real review of a pasted diff, end to end through the worker.

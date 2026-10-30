@@ -2,17 +2,23 @@
 secret is ever returned); changing, testing and listing a provider's models
 need an organisation owner or admin."""
 
+import json
 import uuid
+from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Annotated
 
 from db.ai_endpoints import KINDS
 from db.credentials import CredentialError
+from db.provider import ProviderKind
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.deps import CurrentUser, OrgAdmin
 from api.db.session import get_db
 from api.schemas.providers import (
+    EndpointPreset,
     ModelList,
     ModelRoutePublic,
     ProviderCreate,
@@ -45,6 +51,24 @@ async def _require(db: AsyncSession, org_id: uuid.UUID, provider_id: uuid.UUID):
     return provider
 
 
+def this_machine() -> str:
+    """The host name revu's API (and worker, which runs the same way) uses
+    for the machine it runs on: from inside a container that's the Docker
+    host, otherwise loopback."""
+    return "host.docker.internal" if Path("/.dockerenv").exists() else "127.0.0.1"
+
+
+def _presets(kind: ProviderKind) -> list[EndpointPreset]:
+    if kind != ProviderKind.OPENAI_COMPATIBLE:
+        return []
+    host = this_machine()
+    return [
+        EndpointPreset(label="Ollama on this machine", url=f"http://{host}:11434/v1"),
+        EndpointPreset(label="LM Studio on this machine", url=f"http://{host}:1234/v1"),
+        EndpointPreset(label="vLLM on this machine", url=f"http://{host}:8000/v1"),
+    ]
+
+
 @router.get("/kinds", response_model=list[ProviderKindInfo])
 async def list_kinds(_: CurrentUser) -> list[ProviderKindInfo]:
     return [
@@ -55,6 +79,7 @@ async def list_kinds(_: CurrentUser) -> list[ProviderKindInfo]:
             needs_base_url=info.needs_base_url,
             default_base_url=info.default_base_url,
             available=info.available,
+            presets=_presets(kind),
         )
         for kind, info in KINDS.items()
     ]
@@ -113,9 +138,33 @@ async def test_provider(
     in total; billed by paid providers)."""
     provider = await _require(db, user.org_id, provider_id)
     try:
-        return await service.test_provider(db, actor=user, provider=provider, model=body.model)
+        return await service.test_provider(
+            db, actor=user, provider=provider, model=body.model, reasoning=body.reasoning
+        )
     except service.ProviderError as exc:
         raise _http(exc) from exc
+
+
+@router.post("/{provider_id}/test/stream")
+async def test_provider_stream(
+    provider_id: uuid.UUID, body: ProviderTestRequest, user: OrgAdmin, db: Db
+) -> StreamingResponse:
+    """The same test, reported live as newline-delimited JSON: an event when
+    each call starts and ends, then the recorded result (see
+    `service.run_provider_test`)."""
+    provider = await _require(db, user.org_id, provider_id)
+    events = service.run_provider_test(
+        db, actor=user, provider=provider, model=body.model, reasoning=body.reasoning
+    )
+
+    async def lines() -> AsyncIterator[str]:
+        async for event in events:
+            yield json.dumps(event) + "\n"
+
+    # No proxy buffering: each line should reach the browser as it's written.
+    return StreamingResponse(
+        lines(), media_type="application/x-ndjson", headers={"X-Accel-Buffering": "no"}
+    )
 
 
 @router.get("/{provider_id}/models", response_model=ModelList)

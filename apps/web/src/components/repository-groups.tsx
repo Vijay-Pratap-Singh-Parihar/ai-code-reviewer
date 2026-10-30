@@ -7,7 +7,7 @@ import { formatApiError, listInstallations, type InstallationPublic, type Reposi
 import { CONNECTION_STATUS_LABEL } from "@/lib/lifecycle";
 import { RepositoryRow, useRepositories } from "@/components/repository-list";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 type Group = { key: string; installation: InstallationPublic | null; repos: RepositoryPublic[] };
@@ -58,10 +58,10 @@ export function RepositoryGroups() {
             No GitHub repositories connected yet. Connect a GitHub account to review pull requests with one
             click, no diff pasting needed.
           </p>
-          <Button render={<Link href="/github" />}>
+          <Link href="/github" className={buttonVariants()}>
             <Plug />
             Connect GitHub
-          </Button>
+          </Link>
         </CardContent>
       </Card>
     );

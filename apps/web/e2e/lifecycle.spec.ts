@@ -37,6 +37,8 @@ test.afterAll(() => {
 
 test("an owner's sign-ins are audited and filterable; repositories are grouped", async ({ page, context }) => {
   await page.goto("/signup");
+  await page.getByLabel("First name").fill("Playwright");
+  await page.getByLabel("Last name").fill("Tester");
   await page.getByLabel("Organization name").fill(ORG_NAME);
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password").fill(PASSWORD);

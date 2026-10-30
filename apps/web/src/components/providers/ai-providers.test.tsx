@@ -8,9 +8,10 @@ import {
   deleteProvider,
   listModelRoutes,
   listProviderKinds,
+  listProviderModels,
   listProviders,
   setModelRoutes,
-  testProvider,
+  testProviderLive,
   updateProvider,
   type ProviderKindInfo,
   type ProviderPublic,
@@ -27,7 +28,7 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
     createProvider: vi.fn(),
     updateProvider: vi.fn(),
     deleteProvider: vi.fn(),
-    testProvider: vi.fn(),
+    testProviderLive: vi.fn(),
     listProviderModels: vi.fn(),
     setModelRoutes: vi.fn(),
   };
@@ -43,6 +44,10 @@ const KINDS: ProviderKindInfo[] = [
     needs_base_url: true,
     default_base_url: null,
     available: true,
+    presets: [
+      { label: "Ollama on this machine", url: "http://127.0.0.1:11434/v1" },
+      { label: "LM Studio on this machine", url: "http://127.0.0.1:1234/v1" },
+    ],
   },
   { kind: "bedrock", label: "AWS Bedrock", needs_api_key: true, needs_base_url: false, default_base_url: null, available: false },
 ];
@@ -93,7 +98,8 @@ describe("AiProviders", () => {
     vi.mocked(updateProvider).mockReset().mockResolvedValue(provider());
     vi.mocked(deleteProvider).mockReset().mockResolvedValue();
     vi.mocked(setModelRoutes).mockReset().mockResolvedValue([]);
-    vi.mocked(testProvider).mockReset();
+    vi.mocked(testProviderLive).mockReset();
+    vi.mocked(listProviderModels).mockReset().mockResolvedValue({ models: ["qwen3.5:4b", "qwen3.5:9b"] });
     signInAs("owner");
   });
   afterEach(() => setAuthState({ accessToken: null, user: null, status: "unauthenticated" }));
@@ -113,15 +119,23 @@ describe("AiProviders", () => {
     await user.click(screen.getByRole("combobox", { name: /provider/i }));
     await user.click(await screen.findByRole("option", { name: /openai-compatible endpoint/i }));
     expect(screen.getByRole("option", { hidden: true, name: /aws bedrock \(coming soon\)/i })).toBeInTheDocument();
-    await user.type(screen.getByLabelText("Name"), "Local Ollama");
+    // A name is suggested, and password managers are told to leave it alone
+    // (they used to fill it with the user's email).
+    const name = screen.getByLabelText("Display name");
+    expect(name).toHaveValue("My model server");
+    expect(name).toHaveAttribute("autocomplete", "off");
+    expect(screen.getByLabelText(/api key/i)).toHaveAttribute("autocomplete", "new-password");
+    // Presets come from the API, with the host revu can reach.
     await user.click(screen.getByRole("button", { name: /ollama on this machine/i }));
+    expect(name).toHaveValue("Local Ollama");
+    expect(screen.getByLabelText("Endpoint URL")).toHaveValue("http://127.0.0.1:11434/v1");
     await user.click(screen.getByRole("button", { name: /^add provider$/i }));
 
     await waitFor(() =>
       expect(createProvider).toHaveBeenCalledWith({
         name: "Local Ollama",
         kind: "openai_compatible",
-        base_url: "http://host.docker.internal:11434/v1",
+        base_url: "http://127.0.0.1:11434/v1",
         api_key: null,
         settings: { input_cost_per_mtok: null, output_cost_per_mtok: null },
       }),
@@ -164,26 +178,72 @@ describe("AiProviders", () => {
     expect(vi.mocked(updateProvider).mock.calls[1][1]).toMatchObject({ api_key: "gsk_new_key" });
   });
 
-  it("runs a connection test and explains a model without tool calling", async () => {
-    vi.mocked(listProviders).mockResolvedValue([provider()]);
-    vi.mocked(testProvider).mockResolvedValue({
+  it("shows each call of a connection test as it runs, then offers the model for reviews", async () => {
+    vi.mocked(listProviders).mockResolvedValue([
+      provider({ id: "p2", name: "Local Ollama", kind: "openai_compatible", kind_label: "OpenAI-compatible" }),
+    ]);
+    const result = {
       ok: true,
-      model: "qwen3.5:9b",
+      model: "qwen3.5:4b",
       reply: { ok: true, detail: "OK", latency_ms: 1200 },
       json_mode: { ok: true, detail: null, latency_ms: 900 },
       tool_calling: { ok: false, detail: "the model answered without calling the tool", latency_ms: 800 },
       cost_usd: 0,
-    });
+    };
+    let finish: () => void = () => {};
+    vi.mocked(testProviderLive).mockImplementation(
+      (_id, _body, onEvent) =>
+        new Promise((resolve) => {
+          onEvent({ event: "start", step: "reply" });
+          onEvent({ event: "step", step: "reply", result: result.reply });
+          onEvent({ event: "start", step: "json_mode" });
+          finish = () => {
+            onEvent({ event: "step", step: "json_mode", result: result.json_mode });
+            onEvent({ event: "start", step: "tool_calling" });
+            onEvent({ event: "step", step: "tool_calling", result: result.tool_calling });
+            onEvent({ event: "done", result });
+            resolve(result);
+          };
+        }),
+    );
+    vi.mocked(setModelRoutes).mockResolvedValue([]);
     const user = userEvent.setup();
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: /^test$/i }));
-    await user.type(screen.getByLabelText("Model"), "qwen3.5:9b");
-    await user.click(screen.getByRole("button", { name: /run test/i }));
+    const dialog = await screen.findByRole("dialog");
+    // The model list loads by itself; pick from it.
+    await user.click(within(dialog).getByLabelText("Model"));
+    await user.click(await screen.findByRole("option", { name: "qwen3.5:4b" }));
+    // A local model is tested with thinking off unless chosen otherwise.
+    expect(within(dialog).getByRole("combobox", { name: "Thinking" })).toHaveTextContent("Off (fastest)");
+    await user.click(within(dialog).getByRole("button", { name: /run test/i }));
 
-    expect(await screen.findByText(/ready for reviews/i)).toBeInTheDocument();
-    expect(testProvider).toHaveBeenCalledWith("p1", "qwen3.5:9b");
-    expect(screen.getByText(/run as diff-only reviews instead/i)).toBeInTheDocument();
+    // Mid-test: the first call passed, the second is running, the third waits.
+    expect(await within(dialog).findByLabelText("running")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("passed")).toBeInTheDocument();
+    expect(within(dialog).getByLabelText("waiting")).toBeInTheDocument();
+    expect(within(dialog).getByText("Answered “OK”")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /stop/i })).toBeInTheDocument();
+    expect(testProviderLive).toHaveBeenCalledWith(
+      "p2",
+      { model: "qwen3.5:4b", reasoning: "off" },
+      expect.any(Function),
+      expect.anything(),
+    );
+
+    finish();
+    expect(await within(dialog).findByText(/ready for reviews/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/cross-file reviews run as diff-only/i)).toBeInTheDocument();
+    expect(within(dialog).getByText("the model answered without calling the tool")).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole("button", { name: /use for reviews/i }));
+    await waitFor(() =>
+      expect(setModelRoutes).toHaveBeenCalledWith({
+        review: { provider_id: "p2", model: "qwen3.5:4b", reasoning: "off" },
+      }),
+    );
+    expect(await within(dialog).findByText(/reviews now use qwen3.5:4b/i)).toBeInTheDocument();
   });
 
   it("saves the review model and leaves unset steps empty", async () => {
@@ -193,7 +253,9 @@ describe("AiProviders", () => {
 
     await user.click(await screen.findByRole("combobox", { name: /review provider/i }));
     await user.click(await screen.findByRole("option", { name: "Groq" }));
+    // Any id can be typed, listed or not.
     await user.type(screen.getByLabelText(/review model/i), "openai/gpt-oss-120b");
+    await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: /save models/i }));
 
     await waitFor(() =>

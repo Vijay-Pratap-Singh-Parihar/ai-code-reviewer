@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ExternalLink, Send } from "lucide-react";
 import { formatApiError, postReviewToGitHub, type AnalysisRunPublic } from "@/lib/api-client";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 
 const POLL_MS = 2500;
 const MAX_POLLS = 24; // about a minute
@@ -47,10 +47,10 @@ export function PostToGitHub({ run }: { run: AnalysisRunPublic }) {
 
   if (run.github_review_url) {
     return (
-      <Button variant="outline" size="sm" render={<a href={run.github_review_url} target="_blank" rel="noreferrer" />}>
+      <a href={run.github_review_url} target="_blank" rel="noreferrer" className={buttonVariants({ variant: "outline", size: "sm" })}>
         Posted to GitHub
         <ExternalLink />
-      </Button>
+      </a>
     );
   }
 

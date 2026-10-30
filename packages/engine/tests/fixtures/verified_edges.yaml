@@ -30,25 +30,25 @@ edges:
   - caller: api.routers.auth.logout
     callee: api.services.auth.revoke_refresh_token
     file: apps/api/src/api/routers/auth.py
-    line: 100
+    line: 111
     note: "logout() revokes the presented refresh token via the auth service"
 
   - caller: api.routers.auth.signup
     callee: api.services.auth.signup
     file: apps/api/src/api/routers/auth.py
-    line: 46
+    line: 52
     note: "signup() router handler calls the same-named auth_service.signup()"
 
   - caller: api.services.auth.signup
     callee: db.organization.User
     file: apps/api/src/api/services/auth.py
-    line: 97
+    line: 103
     note: "signup() constructs a new User() row"
 
   - caller: api.services.auth.signup
     callee: db.organization.Organization
     file: apps/api/src/api/services/auth.py
-    line: 93
+    line: 99
     note: "signup() constructs a new Organization() row"
 
   - caller: api.services.auth._issue_token_pair

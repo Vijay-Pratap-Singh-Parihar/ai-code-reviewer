@@ -8,6 +8,9 @@ export type UserPublic = {
   id: string;
   org_id: string;
   email: string;
+  // Null only for accounts created before names were asked for.
+  first_name?: string | null;
+  last_name?: string | null;
   role: UserRole | string;
   // Deployment operator: the only role that may create the GitHub App.
   is_platform_admin?: boolean;
@@ -121,8 +124,20 @@ export async function apiFetchJson<T>(path: string, init?: RequestInit): Promise
   return body as T;
 }
 
+/** "Ada Lovelace", or the email for an account that has no name yet. */
+export function displayName(user: Pick<UserPublic, "email" | "first_name" | "last_name">): string {
+  const name = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+  return name || user.email;
+}
+
+export function updateProfile(input: { first_name: string; last_name: string }): Promise<UserPublic> {
+  return apiFetchJson<UserPublic>("/auth/me", { method: "PATCH", body: JSON.stringify(input) });
+}
+
 export function signup(input: {
   org_name: string;
+  first_name: string;
+  last_name: string;
   email: string;
   password: string;
 }): Promise<AccessTokenResponse> {
@@ -469,6 +484,8 @@ export type ProviderKindInfo = {
   needs_base_url: boolean;
   default_base_url: string | null;
   available: boolean;
+  /** Common servers of this kind, with the host revu's API can actually reach. */
+  presets?: { label: string; url: string }[];
 };
 
 export type ProviderSettings = {
@@ -564,11 +581,66 @@ export async function deleteProvider(id: string): Promise<void> {
   }
 }
 
-export function testProvider(id: string, model: string): Promise<ProviderTestResult> {
+export function testProvider(
+  id: string,
+  model: string,
+  reasoning: Reasoning | null = null,
+): Promise<ProviderTestResult> {
   return apiFetchJson<ProviderTestResult>(`/providers/${id}/test`, {
     method: "POST",
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, reasoning }),
   });
+}
+
+export type TestStep = "reply" | "json_mode" | "tool_calling";
+
+export type ProviderTestEvent =
+  | { event: "start"; step: TestStep }
+  | { event: "step"; step: TestStep; result: ProbeResult }
+  | { event: "done"; result: ProviderTestResult };
+
+/**
+ * The same connection test, reported as it runs: the API streams one JSON
+ * line when each call starts and ends, so the UI can show which one a slow
+ * local model is on. Resolves with the recorded result.
+ */
+export async function testProviderLive(
+  id: string,
+  body: { model: string; reasoning: Reasoning | null },
+  onEvent: (event: ProviderTestEvent) => void,
+  signal?: AbortSignal,
+): Promise<ProviderTestResult> {
+  const response = await apiFetch(`/providers/${id}/test/stream`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok || !response.body) {
+    const parsed = await parseJsonSafely(response);
+    const detail =
+      parsed !== null && typeof parsed === "object" && "detail" in parsed
+        ? (parsed as { detail: unknown }).detail
+        : parsed;
+    throw new ApiError(response.status, detail);
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = "";
+  let result: ProviderTestResult | null = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) buffered += value;
+    const lines = buffered.split("\n");
+    buffered = done ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as ProviderTestEvent;
+      if (event.event === "done") result = event.result;
+      onEvent(event);
+    }
+    if (done) break;
+  }
+  if (result === null) throw new Error("The test stopped before it finished. Try again.");
+  return result;
 }
 
 export function listProviderModels(id: string): Promise<{ models: string[] }> {

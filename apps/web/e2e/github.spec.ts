@@ -40,6 +40,8 @@ test.afterAll(() => {
 
 test("sign up, then GitHub/Repositories screens and the collapsed manual form", async ({ page }) => {
   await page.goto("/signup");
+  await page.getByLabel("First name").fill("Playwright");
+  await page.getByLabel("Last name").fill("Tester");
   await page.getByLabel("Organization name").fill(ORG_NAME);
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password").fill(PASSWORD);
