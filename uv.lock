@@ -9,6 +9,7 @@ members = [
     "db",
     "ghapp",
     "revu",
+    "revu-bench",
     "worker",
 ]
 
@@ -1656,6 +1657,23 @@ requires-dist = [
     { name = "tiktoken", specifier = ">=0.8.0" },
     { name = "tree-sitter", specifier = ">=0.23.2" },
     { name = "tree-sitter-python", specifier = ">=0.23.4" },
+]
+
+[[package]]
+name = "revu-bench"
+version = "0.1.0"
+source = { editable = "packages/bench" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "revu" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.0" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "revu", editable = "packages/engine" },
 ]
 
 [[package]]
