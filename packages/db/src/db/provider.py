@@ -3,7 +3,15 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -89,6 +97,9 @@ class ModelRoute(UUIDPrimaryKeyMixin, Base):
             ondelete="CASCADE",
             name="fk_model_routes_provider_org",
         ),
+        CheckConstraint(
+            "reasoning IN ('off', 'low', 'medium', 'high')", name="ck_model_routes_reasoning"
+        ),
     )
 
     org_id: Mapped[uuid.UUID] = mapped_column(
@@ -97,6 +108,9 @@ class ModelRoute(UUIDPrimaryKeyMixin, Base):
     tier: Mapped[ModelTier] = mapped_column(pg_enum(ModelTier), nullable=False)
     provider_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # How much the model may think before answering (`revu.providers.llm.Reasoning`);
+    # NULL leaves it to the model.
+    reasoning: Mapped[str | None] = mapped_column(String(16))
     updated_at: Mapped[datetime | None] = mapped_column(TZDateTime)
 
     provider: Mapped[AIProvider] = relationship(back_populates="model_routes")

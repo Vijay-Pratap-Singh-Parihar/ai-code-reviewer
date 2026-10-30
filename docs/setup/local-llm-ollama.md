@@ -188,4 +188,47 @@ ollama list
 
 **How to undo.** `ollama rm qwen3.5:9b` (or `qwen3.5:4b`) frees its space. Deleting 9b is reasonable on this laptop, since 4b is the one in use.
 
-<!-- Steps 6+ are appended as they are performed. -->
+## 6. Connect it to revu from the UI, with thinking switched off
+
+Nothing below is an environment variable or a config file: it is all done on the **AI Providers** screen.
+
+1. **Add provider** → *OpenAI-compatible*:
+   - Name: `Local Ollama`.
+   - Endpoint URL as the **API** reaches Ollama: `http://host.docker.internal:11434/v1` when revu runs in Docker, or `http://127.0.0.1:11434/v1` when it runs directly on the machine.
+   - API key: leave it empty.
+2. **Test** with model `qwen3.5:4b`. It should say *Ready for reviews*: it replies and returns JSON.
+3. Under **Model for each review step**, set **Review**:
+   - provider: `Local Ollama`
+   - model: `qwen3.5:4b`
+   - **Thinking: Off (fastest)**
+
+   Then click **Save models**.
+
+**Why the Thinking setting exists.** Measured on this laptop, the same 4b model reviewing the same small diff took:
+
+| Thinking | Time per review |
+|---|---|
+| Off | **12–14 s** |
+| On (model default) | about 5 min |
+
+- The setting is stored per review step.
+- Each queued review records it, so changing it later doesn't affect reviews already queued.
+- It is sent to the model as the standard `reasoning_effort` parameter, which Ollama, Groq, OpenAI and Anthropic all accept. LiteLLM translates it per provider.
+- *Model default* sends nothing; open models such as Qwen then think.
+- *Low* to *High* buy more reasoning on hosted reasoning models, at a higher cost.
+
+**Checked automatically.** `apps/web/e2e/local-model.spec.ts` drives the steps above in a real browser and runs one real review, against a running stack and Ollama:
+
+```powershell
+cd apps\web
+$env:E2E_OLLAMA = "1"; $env:OLLAMA_URL = "http://127.0.0.1:11434/v1"
+npx playwright test e2e/local-model.spec.ts
+```
+
+Result on 2026-10-30: passed in 1.1 minutes.
+
+**What it affects.** Reviews for this organisation now go to the laptop. The code never leaves the machine, and each review costs nothing.
+
+**How to undo.** Point **Review** at another provider, or delete the *Local Ollama* provider, which removes its routes.
+
+<!-- Steps 7+ are appended as they are performed. -->

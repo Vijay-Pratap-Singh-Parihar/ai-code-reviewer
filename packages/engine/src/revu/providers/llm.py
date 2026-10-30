@@ -10,7 +10,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, get_args
 
 # LiteLLM downloads its model price table from GitHub on import, retrying for
 # ~20 s when offline. Use the copy it ships with instead: startup stays fast
@@ -25,6 +25,16 @@ import litellm  # noqa: E402
 # on which params they accept; silently dropping the ones a given model
 # doesn't support beats failing every call to that model.
 litellm.drop_params = True
+
+
+# How much a model may think before answering, chosen per review step in the
+# UI. `None` leaves it to the model (many open models think by default).
+Reasoning = Literal["off", "low", "medium", "high"]
+REASONING_LEVELS: tuple[str, ...] = get_args(Reasoning)
+
+# Anthropic needs room for the thinking budget inside `max_tokens`
+# (LiteLLM's budget for "high" is 4096 tokens), plus the answer itself.
+_ANTHROPIC_THINKING_MAX_TOKENS = 16_000
 
 
 @dataclass(frozen=True)
@@ -48,11 +58,45 @@ class ModelEndpoint:
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None
     supports_tools: bool = True
+    reasoning: Reasoning | None = None
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
 
     def __repr__(self) -> str:  # never print the key in logs or tracebacks
         return f"ModelEndpoint(model={self.model!r}, api_base={self.api_base!r})"
+
+
+def reasoning_kwargs(endpoint: ModelEndpoint, *, max_tokens: int | None) -> dict[str, Any]:
+    """The completion arguments that apply `endpoint.reasoning`.
+
+    Every supported provider takes the OpenAI-style `reasoning_effort`, which
+    LiteLLM translates (an Anthropic thinking budget, Groq's and Ollama's own
+    switch). "off" is sent as `none` rather than left out, because open
+    models such as Qwen think unless told not to: on a 4 GB laptop GPU that
+    is the difference between a 1-second and a 5-minute answer.
+
+    Anthropic and OpenAI's hosted reasoning models refuse a custom
+    temperature while thinking, so it is left out for them (`temperature`
+    is `None` in the result); Anthropic also needs `max_tokens` to exceed
+    the thinking budget.
+    """
+    level = endpoint.reasoning
+    if level is None:
+        return {}
+    if level == "off":
+        return {"reasoning_effort": "none"}
+    kwargs: dict[str, Any] = {"reasoning_effort": level}
+    hosted_reasoner = endpoint.api_base is None and endpoint.model.startswith(
+        ("anthropic/", "openai/")
+    )
+    if hosted_reasoner:
+        kwargs["temperature"] = None
+    if (
+        endpoint.model.startswith("anthropic/")
+        and (max_tokens or 0) < _ANTHROPIC_THINKING_MAX_TOKENS
+    ):
+        kwargs["max_tokens"] = _ANTHROPIC_THINKING_MAX_TOKENS
+    return kwargs
 
 
 @dataclass(frozen=True)
@@ -93,7 +137,9 @@ def _parse_tool_calls(message: Any) -> list[ToolCall]:
             arguments = {}
         calls.append(
             ToolCall(
-                id=call.id, name=call.function.name, arguments=arguments,
+                id=call.id,
+                name=call.function.name,
+                arguments=arguments,
                 raw_arguments=raw_arguments,
             )
         )
@@ -122,6 +168,10 @@ async def complete(
             kwargs["api_base"] = endpoint.api_base
         if endpoint.extra_headers:
             kwargs["extra_headers"] = endpoint.extra_headers
+        kwargs.update(reasoning_kwargs(endpoint, max_tokens=max_tokens))
+    kwargs.setdefault("temperature", temperature)
+    if kwargs["temperature"] is None:
+        del kwargs["temperature"]
 
     start = time.monotonic()
     response = await litellm.acompletion(
@@ -129,7 +179,6 @@ async def complete(
         messages=messages,
         response_format=response_format,
         tools=tools,
-        temperature=temperature,
         **kwargs,
     )
     latency_ms = int((time.monotonic() - start) * 1000)

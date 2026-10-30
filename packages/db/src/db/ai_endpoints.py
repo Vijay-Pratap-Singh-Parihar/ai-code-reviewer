@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-from revu.providers.llm import ModelEndpoint
+from revu.providers.llm import ModelEndpoint, Reasoning
 
 from db.credentials import decrypt_credentials
 from db.provider import AIProvider, ProviderKind
@@ -118,10 +118,15 @@ def credentials_of(provider: AIProvider, secret: str) -> dict[str, Any]:
 
 
 async def endpoint_for(
-    provider: AIProvider, model_name: str, *, secret: str, allow_private: bool
+    provider: AIProvider,
+    model_name: str,
+    *,
+    secret: str,
+    allow_private: bool,
+    reasoning: Reasoning | None = None,
 ) -> ModelEndpoint:
     """The callable endpoint for `model_name` on `provider`, with its key
-    decrypted and its URL checked."""
+    decrypted and its URL checked. `reasoning` comes from the model route."""
     info = KINDS[provider.kind]
     if not info.available:
         raise ProviderNotSupportedError(f"{info.label} is not supported yet")
@@ -139,6 +144,7 @@ async def endpoint_for(
         api_base=base_url if provider.kind == ProviderKind.OPENAI_COMPATIBLE else provider.base_url,
         extra_headers=credentials.get("headers") or None,
         supports_tools=settings.get("supports_tools") is not False,
+        reasoning=reasoning,
         input_cost_per_mtok=settings.get("input_cost_per_mtok"),
         output_cost_per_mtok=settings.get("output_cost_per_mtok"),
     )

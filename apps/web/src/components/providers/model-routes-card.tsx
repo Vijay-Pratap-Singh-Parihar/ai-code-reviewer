@@ -8,6 +8,7 @@ import {
   type ModelRoutePublic,
   type ModelTier,
   type ProviderPublic,
+  type Reasoning,
   type RouteUpdate,
 } from "@/lib/api-client";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +18,15 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const NONE = "none";
+const MODEL_DEFAULT = "default";
+
+const THINKING: { value: Reasoning | typeof MODEL_DEFAULT; label: string }[] = [
+  { value: MODEL_DEFAULT, label: "Model default" },
+  { value: "off", label: "Off (fastest)" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
 
 export const TIERS: { tier: ModelTier; label: string; description: string; inUse: boolean }[] = [
   {
@@ -39,27 +49,34 @@ export const TIERS: { tier: ModelTier; label: string; description: string; inUse
   },
 ];
 
-type Draft = Record<ModelTier, { providerId: string; model: string }>;
+type DraftRoute = { providerId: string; model: string; reasoning: Reasoning | null };
+type Draft = Record<ModelTier, DraftRoute>;
 
 function draftFrom(routes: ModelRoutePublic[]): Draft {
-  const draft: Draft = {
-    review: { providerId: NONE, model: "" },
-    screen: { providerId: NONE, model: "" },
-    verify: { providerId: NONE, model: "" },
-  };
-  for (const route of routes) draft[route.tier] = { providerId: route.provider_id, model: route.model };
+  const empty: DraftRoute = { providerId: NONE, model: "", reasoning: null };
+  const draft: Draft = { review: { ...empty }, screen: { ...empty }, verify: { ...empty } };
+  for (const route of routes) {
+    draft[route.tier] = { providerId: route.provider_id, model: route.model, reasoning: route.reasoning };
+  }
   return draft;
 }
+
+const thinkingLabel = (value: string) => THINKING.find((t) => t.value === value)?.label ?? value;
 
 /** Which provider and model each review step uses. */
 export function ModelRoutesCard({
   routes,
   providers,
   canEdit,
+  saved = false,
+  onSaved,
 }: {
   routes: ModelRoutePublic[];
   providers: ProviderPublic[];
   canEdit: boolean;
+  /** The routes shown are the ones just saved (the card re-mounts on save). */
+  saved?: boolean;
+  onSaved?: (routes: ModelRoutePublic[]) => void;
 }) {
   // Initialised from the saved routes; the parent re-mounts this card (via
   // `key`) whenever they change, so there is no prop-to-state syncing.
@@ -73,11 +90,12 @@ export function ModelRoutesCard({
         body[tier] =
           entry.providerId === NONE || !entry.model.trim()
             ? null
-            : { provider_id: entry.providerId, model: entry.model.trim() };
+            : { provider_id: entry.providerId, model: entry.model.trim(), reasoning: entry.reasoning };
       }
       return setModelRoutes(body);
     },
     onSuccess: (updated) => {
+      onSaved?.(updated);
       queryClient.setQueryData(["model-routes"], updated);
       void queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
@@ -97,7 +115,7 @@ export function ModelRoutesCard({
           </p>
         )}
         {TIERS.map(({ tier, label, description, inUse }) => (
-          <div key={tier} className="grid gap-2 sm:grid-cols-[10rem_1fr_1fr] sm:items-start">
+          <div key={tier} className="grid gap-2 sm:grid-cols-[10rem_1fr_1fr_10rem] sm:items-start">
             <div className="flex flex-col">
               <span className="flex items-center gap-2 text-sm font-medium">
                 {label}
@@ -133,10 +151,41 @@ export function ModelRoutesCard({
               onChange={(event) =>
                 setDraft((d) => ({ ...d, [tier]: { ...d[tier], model: event.target.value } }))
               }
-              placeholder="model id, e.g. qwen3.5:9b"
+              placeholder="model id, e.g. qwen3.5:4b"
             />
+            <Select
+              value={draft[tier].reasoning ?? MODEL_DEFAULT}
+              disabled={!canEdit || draft[tier].providerId === NONE}
+              onValueChange={(value) =>
+                setDraft((d) => ({
+                  ...d,
+                  [tier]: {
+                    ...d[tier],
+                    reasoning: !value || value === MODEL_DEFAULT ? null : (value as Reasoning),
+                  },
+                }))
+              }
+            >
+              <SelectTrigger aria-label={`${label} thinking`} className="w-full">
+                <SelectValue>{(value: string) => `Thinking: ${thinkingLabel(value)}`}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                {THINKING.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         ))}
+        <p className="text-xs text-muted-foreground">
+          <strong>Thinking</strong> is how much the model reasons before it answers. Off is fastest and
+          cheapest. Open models such as Qwen think unless told not to, which on a small GPU can take
+          minutes per file. Low to High usually finds more issues on hosted reasoning models at a higher
+          cost. If a model doesn&apos;t support a level, its review fails with the provider&apos;s
+          error.
+        </p>
         {save.isError && (
           <p role="alert" className="text-sm text-destructive">
             {formatApiError(save.error)}
@@ -147,7 +196,7 @@ export function ModelRoutesCard({
             <Button disabled={save.isPending} onClick={() => save.mutate()}>
               {save.isPending ? "Saving…" : "Save models"}
             </Button>
-            {save.isSuccess && <span className="text-sm text-muted-foreground">Saved.</span>}
+            {(saved || save.isSuccess) && <span className="text-sm text-muted-foreground">Saved.</span>}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">Only owners and admins can change models.</p>

@@ -231,6 +231,37 @@ async def test_analyze_pr_uses_model_from_config_snapshot(
     assert endpoint.api_base == "http://127.0.0.1:11434/v1"
 
 
+@pytest.mark.parametrize(
+    ("recorded", "expected"),
+    [("off", "off"), ("high", "high"), (None, None), ("bogus", None)],
+)
+async def test_the_runs_thinking_setting_reaches_the_model_call(
+    worker_db_session: AsyncSession,
+    worker_ctx: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    recorded: str | None,
+    expected: str | None,
+) -> None:
+    """Runs queued before the setting existed (no key) or with an unknown
+    value fall back to the model's own default instead of failing."""
+    run, _repo = await _make_run(worker_db_session)
+    run.config_snapshot = {**run.config_snapshot, "reasoning": recorded}
+    await worker_db_session.flush()
+    captured: dict[str, object] = {}
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        captured.update(kwargs)
+        return RunResult()
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    endpoint = captured["model"]
+    assert isinstance(endpoint, ModelEndpoint)
+    assert endpoint.reasoning == expected
+
+
 async def test_a_model_without_tool_calling_gets_a_diff_only_review_instead(
     worker_db_session: AsyncSession, tenant_storage: TenantStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

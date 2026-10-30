@@ -449,6 +449,7 @@ async def list_routes(session: AsyncSession, org_id: uuid.UUID) -> list[ModelRou
             provider_id=route.provider_id,
             provider_name=name,
             model=route.model_name,
+            reasoning=route.reasoning,  # type: ignore[arg-type]  # checked by the DB constraint
             updated_at=route.updated_at,
         )
         for route, name in rows.tuples()
@@ -478,8 +479,11 @@ async def set_routes(session: AsyncSession, *, actor: User, body: RouteSet) -> N
             session.add(route)
         route.provider_id = provider.id
         route.model_name = update.model
+        route.reasoning = update.reasoning
         route.updated_at = now
-        summary[tier_name] = f"{provider.name}/{update.model}"
+        summary[tier_name] = f"{provider.name}/{update.model}" + (
+            f" (thinking: {update.reasoning})" if update.reasoning else ""
+        )
     record_audit(
         session,
         org_id=actor.org_id,
@@ -512,5 +516,6 @@ async def route_snapshot(
         "provider_name": provider.name,
         "provider_kind": str(provider.kind),
         "model": route.model_name,
+        "reasoning": route.reasoning,
         "supports_tools": (provider.settings or {}).get("supports_tools") is not False,
     }
