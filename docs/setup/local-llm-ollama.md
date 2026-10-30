@@ -120,4 +120,39 @@ If the line stays unreliable, downloading on a steadier network (college Wi-Fi, 
 
 **Note (2026-10-30).** Ollama updates itself in the background; it is now 0.40.2. The settings above (model folder, context length, no-prune) carried over unchanged.
 
+## Update: Ollama 0.40.2 to 0.40.13 (2026-10-30)
+
+Ollama updates itself, but only at its own pace. Here it was updated by hand to the newest release so the local model runs on the current engine.
+
+```powershell
+# 1. The pinned release installer, downloaded with resume (the line was unreliable)
+curl.exe -L -C - -o "D:\Ollama\installer\OllamaSetup-0.40.13.exe" `
+  https://github.com/ollama/ollama/releases/download/v0.40.13/OllamaSetup.exe
+Get-AuthenticodeSignature "D:\Ollama\installer\OllamaSetup-0.40.13.exe"   # Valid, CN=Ollama Inc.
+
+# 2. Quit Ollama (no model download running), then install over the same folder
+Get-Process "ollama app","ollama" -ErrorAction SilentlyContinue | Stop-Process -Force
+$env:OLLAMA_MODELS = "D:\Ollama\models"; $env:OLLAMA_CONTEXT_LENGTH = "32768"; $env:OLLAMA_NOPRUNE = "1"
+Start-Process "D:\Ollama\installer\OllamaSetup-0.40.13.exe" -ArgumentList '/DIR="D:\Ollama\app"','/VERYSILENT','/NORESTART','/SUPPRESSMSGBOXES'
+```
+
+**Why.**
+- It is a specific, versioned release from Ollama's GitHub, not the moving "latest" link, so the record says exactly what was installed.
+- The signature check also proves the resumed download is complete: a truncated or altered file fails it.
+- Installing into the same `/DIR` replaces the program in place, and the `$env:` lines give the first server the same settings as step 3.
+
+**What it affects.**
+- The program in `D:\Ollama\app` is replaced.
+- Downloaded models, including partial downloads, and the three user variables are left alone.
+- The installer opens the Ollama window when it finishes; closing the window is fine, and Ollama stays in the tray.
+- A command that waits for the installer (`Start-Process -Wait`) keeps waiting until that window is closed.
+- Another 1.7 GB on D: for the new installer. The old `OllamaSetup.exe` (0.40.0) can be deleted, or kept for a rollback.
+
+**Result.**
+- `ollama version is 0.40.13`.
+- The server log shows `OLLAMA_MODELS:D:\Ollama\models`, `OLLAMA_CONTEXT_LENGTH:32768` and `OLLAMA_NOPRUNE:true`.
+- The `qwen3.5:9b` download resumed from where it stopped.
+
+**How to undo.** Run the older installer the same way (quit Ollama, same `/DIR` and switches). Models are unaffected.
+
 <!-- Steps 5+ are appended as they are performed. -->
