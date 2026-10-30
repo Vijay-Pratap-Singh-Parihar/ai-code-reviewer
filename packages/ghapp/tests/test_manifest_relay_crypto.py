@@ -47,7 +47,7 @@ def test_placeholder_detection() -> None:
 # --- manifest -----------------------------------------------------------------
 
 
-def test_manifest_is_read_only_and_points_back_at_the_web_app() -> None:
+def test_manifest_reads_code_writes_only_reviews_and_points_back_at_the_web_app() -> None:
     manifest = build_manifest(
         web_app_url="http://localhost:3000/", webhook_url="https://smee.io/abc", name="revu-x"
     )
@@ -56,7 +56,12 @@ def test_manifest_is_read_only_and_points_back_at_the_web_app() -> None:
     assert manifest["callback_urls"] == ["http://localhost:3000/github/setup"]
     assert manifest["request_oauth_on_install"] is True
     assert manifest["hook_attributes"] == {"url": "https://smee.io/abc", "active": True}
-    assert set(manifest["default_permissions"].values()) == {"read"}
+    # Code stays read-only; the one write is review comments on pull requests.
+    assert manifest["default_permissions"] == {
+        "contents": "read",
+        "pull_requests": "write",
+        "metadata": "read",
+    }
     assert manifest["default_events"] == ["pull_request", "push"]
     assert manifest["public"] is False
 

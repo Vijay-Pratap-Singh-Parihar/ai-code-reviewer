@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Literal
 
 from db.pull_request import AnalysisRunStatus
@@ -68,3 +69,9 @@ class AnalysisRunPublic(BaseModel):
     base_branch: str | None = None
     head_sha: str | None = None
     diff: str | None = None
+    # "github" for pull request reviews (which can be posted back to the PR),
+    # "manual" for pasted diffs.
+    source: str | None = None
+    github_review_url: str | None = None
+    posted_at: datetime | None = None
+    post_error: str | None = None

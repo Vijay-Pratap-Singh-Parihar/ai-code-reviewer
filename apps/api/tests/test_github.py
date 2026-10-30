@@ -23,6 +23,7 @@ from api.testing import configure_review_model
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from db.organization import GithubInstallation, User, UserRole
+from db.pull_request import AnalysisRun, AnalysisRunStatus
 from db.repository import Repository
 from db.tenancy import bind_org
 from ghapp import GitHubAppConfig, GitHubClient, sign_payload
@@ -843,3 +844,114 @@ async def test_login_attempts_are_audited_and_the_trail_pages(api_client: AsyncC
     assert [e["action"] for e in second["entries"]] == ["auth.login_failed"]
     assert first["entries"][0]["actor_email"] == "logins@example.com"
     assert second["next_before"] is None
+
+
+# --- posting reviews to GitHub (Stage 11) --------------------------------------
+
+
+async def _finished_pr_review(api_client: AsyncClient, headers: dict[str, str]) -> str:
+    """A PR review that has run to completion (the worker is faked here)."""
+    await configure_review_model(api_client, headers)
+    repo_id = await _repo_id(api_client, headers, "acme/widgets")
+    queued = await api_client.post(
+        f"/repos/{repo_id}/pulls/7/analysis", json={"agent": "diff_only"}, headers=headers
+    )
+    run_id: str = queued.json()["id"]
+    async for session in app.dependency_overrides[get_db]():
+        await bind_org(session, uuid.UUID(org_of(headers)))
+        run = await session.get(AnalysisRun, uuid.UUID(run_id))
+        assert run is not None
+        run.status = AnalysisRunStatus.SUCCEEDED
+        await session.commit()
+        break
+    return run_id
+
+
+async def test_posting_a_finished_pr_review_queues_the_job_once(
+    api_client: AsyncClient, fake_github: FakeGitHub
+) -> None:
+    headers = await _signup(api_client, "post@example.com")
+    await _link(api_client, headers)
+    run_id = await _finished_pr_review(api_client, headers)
+    me = (await api_client.get("/auth/me", headers=headers)).json()
+
+    posted = await api_client.post(f"/analysis/{run_id}/github-review", headers=headers)
+
+    assert posted.status_code == 202, posted.text
+    assert posted.json()["source"] == "github"
+    assert _enqueued(api_client)[-1] == ("post_github_review", (run_id, org_of(headers), me["id"]))
+
+    # Once GitHub has it, asking again queues nothing.
+    async for session in app.dependency_overrides[get_db]():
+        await bind_org(session, uuid.UUID(org_of(headers)))
+        run = await session.get(AnalysisRun, uuid.UUID(run_id))
+        assert run is not None
+        run.github_review_id = 1
+        run.github_review_url = "https://github.com/acme/widgets/pull/7#r1"
+        await session.commit()
+        break
+    queued_before = len(_enqueued(api_client))
+    again = await api_client.post(f"/analysis/{run_id}/github-review", headers=headers)
+    assert again.json()["github_review_url"].endswith("#r1")
+    assert len(_enqueued(api_client)) == queued_before
+
+
+async def test_only_finished_github_reviews_of_your_own_org_can_be_posted(
+    api_client: AsyncClient, fake_github: FakeGitHub
+) -> None:
+    headers = await _signup(api_client, "post-guards@example.com")
+    await _link(api_client, headers)
+    await configure_review_model(api_client, headers)
+    repo_id = await _repo_id(api_client, headers, "acme/widgets")
+    queued = (
+        await api_client.post(
+            f"/repos/{repo_id}/pulls/7/analysis", json={"agent": "diff_only"}, headers=headers
+        )
+    ).json()
+    pasted = (
+        await api_client.post(
+            "/analysis",
+            json={
+                "repo_full_name": "acme/widgets",
+                "head_sha": "abc1234",
+                "pr_number": 1,
+                "pr_title": "t",
+                "diff": "--- a/x\n+++ b/x\n",
+            },
+            headers=headers,
+        )
+    ).json()
+    other = await _signup(api_client, "post-other@example.com")
+
+    not_finished = await api_client.post(f"/analysis/{queued['id']}/github-review", headers=headers)
+    not_github = await api_client.post(f"/analysis/{pasted['id']}/github-review", headers=headers)
+    other_org = await api_client.post(f"/analysis/{queued['id']}/github-review", headers=other)
+
+    assert not_finished.status_code == 409 and "finished" in not_finished.json()["detail"]
+    assert not_github.status_code == 409 and "GitHub" in not_github.json()["detail"]
+    assert other_org.status_code == 404
+    assert not any(name == "post_github_review" for name, _ in _enqueued(api_client))
+
+
+async def test_installations_report_and_track_the_permission_to_post_reviews(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "perm@example.com")
+    await _link(api_client, headers)  # FakeGitHub grants pull_requests: read
+    before = (await api_client.get("/github/installations", headers=headers)).json()
+
+    await _send_webhook(
+        api_client,
+        "installation",
+        {
+            "action": "new_permissions_accepted",
+            "installation": {
+                "id": INSTALLATION_ID,
+                "permissions": {"pull_requests": "write", "contents": "read"},
+            },
+        },
+    )
+    after = (await api_client.get("/github/installations", headers=headers)).json()
+
+    assert before[0]["can_post_reviews"] is False
+    assert after[0]["can_post_reviews"] is True

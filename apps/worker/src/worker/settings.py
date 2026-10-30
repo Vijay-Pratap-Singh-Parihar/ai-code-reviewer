@@ -14,6 +14,7 @@ from worker.jobs.analyze import analyze_pr
 from worker.jobs.db_ping import db_ping
 from worker.jobs.github import review_github_pr, sync_and_index_branch
 from worker.jobs.ping import ping
+from worker.jobs.post_review import post_github_review
 from worker.jobs.retention import (
     purge_expired_data,
     purge_installation_data,
@@ -89,6 +90,7 @@ class WorkerSettings:
         sync_and_index_branch,
         purge_repository_data,
         purge_installation_data,
+        post_github_review,
     ]
     # Hourly, off the hour so it doesn't coincide with other cron work.
     cron_jobs = [cron(purge_expired_data, minute={17}, unique=True)]

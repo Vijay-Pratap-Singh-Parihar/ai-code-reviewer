@@ -158,6 +158,20 @@ class GitHubClient:
         self._raise_for_status(response)
         return response.text
 
+    async def create_review(
+        self, token: str, full_name: str, number: int, review: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Post one pull request review (`event` COMMENT, a summary body and
+        inline comments). Needs the installation's `pull_requests: write`."""
+        response = await self._http.post(
+            f"/repos/{full_name}/pulls/{number}/reviews",
+            headers=self._token_headers(token),
+            json=review,
+        )
+        self._raise_for_status(response)
+        result: dict[str, Any] = response.json()
+        return result
+
     # --- user-scoped (OAuth user token) --------------------------------
 
     async def exchange_oauth_code(self, code: str) -> str:

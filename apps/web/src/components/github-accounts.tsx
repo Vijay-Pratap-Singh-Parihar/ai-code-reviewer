@@ -63,6 +63,13 @@ function InstallationRow({
           {" · "}connected {formatDate(installation.installed_at)}
           {installation.uninstalled_at && <> · uninstalled {formatDate(installation.uninstalled_at)}</>}
         </span>
+        {status === "active" && installation.can_post_reviews === false && (
+          <span className="text-xs text-amber-700 dark:text-amber-400">
+            Reviews can&apos;t be posted to pull requests yet: the GitHub App needs the &ldquo;Pull
+            requests: Read and write&rdquo; permission (a platform admin changes it in the App&apos;s
+            settings), then accept the new permission here with &ldquo;Manage on GitHub&rdquo;.
+          </span>
+        )}
         {status === "suspended" && (
           <span className="text-xs text-muted-foreground">
             Suspended on GitHub: reviews are paused and nothing is deleted.

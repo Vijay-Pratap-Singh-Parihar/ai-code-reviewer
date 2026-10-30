@@ -14,8 +14,10 @@ import re
 import secrets
 from typing import Any
 
-# Read-only by design: revu reads code and PRs; it doesn't write to repos.
-PERMISSIONS = {"contents": "read", "pull_requests": "read", "metadata": "read"}
+# revu reads code and pull requests, and writes only review comments on
+# pull requests (`pull_requests: write`); it never writes to repositories
+# (`contents` stays read-only).
+PERMISSIONS = {"contents": "read", "pull_requests": "write", "metadata": "read"}
 EVENTS = ["pull_request", "push"]
 
 _ORG_NAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")

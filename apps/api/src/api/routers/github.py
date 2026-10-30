@@ -67,6 +67,7 @@ async def _to_public(db: AsyncSession, installation: GithubInstallation) -> Inst
         uninstalled_at=installation.uninstalled_at,
         disconnected_repository_count=int(disconnected_count or 0),
         purge_after=lifecycle.purge_after(earliest_disconnect),
+        can_post_reviews=(installation.permissions or {}).get("pull_requests") == "write",
     )
 
 

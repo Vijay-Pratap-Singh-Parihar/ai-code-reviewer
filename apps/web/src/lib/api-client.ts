@@ -184,7 +184,17 @@ export type AnalysisRunPublic = {
   base_branch?: string | null;
   head_sha?: string | null;
   diff?: string | null;
+  // "github" for pull request reviews (postable back to the PR), "manual" for pasted diffs.
+  source?: string | null;
+  github_review_url?: string | null;
+  posted_at?: string | null;
+  post_error?: string | null;
 };
+
+/** Queue posting a finished PR review to GitHub; a no-op once it is posted. */
+export function postReviewToGitHub(runId: string): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}/github-review`, { method: "POST" });
+}
 
 export type AnalysisRequest = {
   repo_full_name: string;
@@ -295,6 +305,8 @@ export type InstallationPublic = {
   // retention job, and when the earliest of them is deleted.
   disconnected_repository_count?: number;
   purge_after?: string | null;
+  // The installation granted `pull_requests: write`, which posting reviews needs.
+  can_post_reviews?: boolean;
 };
 
 export type RepositoryPublic = {

@@ -117,6 +117,15 @@ describe("GitHubAccounts", () => {
     expect(await screen.findByText(/No webhook secret is configured/)).toBeInTheDocument();
   });
 
+  it("tells you when a connection can't post reviews yet", async () => {
+    vi.mocked(getGitHubApp).mockResolvedValue(CONFIGURED);
+    vi.mocked(listInstallations).mockResolvedValue([installation({ can_post_reviews: false })]);
+
+    renderAccounts();
+
+    expect(await screen.findByText(/reviews can't be posted to pull requests yet/i)).toBeInTheDocument();
+  });
+
   it("explains a suspended connection keeps its data", async () => {
     vi.mocked(getGitHubApp).mockResolvedValue(CONFIGURED);
     vi.mocked(listInstallations).mockResolvedValue([installation({ status: "suspended" })]);

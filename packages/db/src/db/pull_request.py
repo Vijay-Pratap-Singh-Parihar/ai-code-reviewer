@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from revu.models import FindingCategory, Severity
 from sqlalchemy import (
+    BigInteger,
     ForeignKey,
     ForeignKeyConstraint,
     Integer,
@@ -114,6 +115,13 @@ class AnalysisRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     # The exact diff this run reviewed, so the PR view can render it from the
     # server instead of relying on the browser that triggered the run.
     diff_text: Mapped[str | None] = mapped_column(Text)
+    # The GitHub pull request review this run was posted as. Set once: a run
+    # is posted at most once, however often posting is requested.
+    github_review_id: Mapped[int | None] = mapped_column(BigInteger)
+    github_review_url: Mapped[str | None] = mapped_column(String(500))
+    posted_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    # Why the last attempt to post failed (missing permission, PR closed...).
+    post_error: Mapped[str | None] = mapped_column(Text)
 
     pull_request: Mapped[PullRequest] = relationship(back_populates="analysis_runs")
     findings: Mapped[list["FindingRecord"]] = relationship(

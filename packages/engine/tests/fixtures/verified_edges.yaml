@@ -18,13 +18,13 @@ edges:
   - caller: api.routers.analysis.get_analysis
     callee: api.services.analysis.get_run_for_org
     file: apps/api/src/api/routers/analysis.py
-    line: 68
+    line: 72
     note: "GET /analysis/{run_id} handler delegates the org-scoped lookup to the service layer"
 
   - caller: api.routers.analysis.trigger_analysis
     callee: api.services.analysis.create_analysis_run
     file: apps/api/src/api/routers/analysis.py
-    line: 47
+    line: 51
     note: "POST /analysis handler creates the run via the service layer (imported as analysis_service alias)"
 
   - caller: api.routers.auth.logout
