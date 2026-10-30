@@ -13,6 +13,7 @@ from db.testing import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from worker.storage import TenantStorage, signing_key_from_secret
+from worker.testing import TEST_ACCESS
 
 
 def _skip_if_unreachable() -> None:
@@ -93,4 +94,5 @@ def worker_ctx(worker_db_session: AsyncSession, tenant_storage: TenantStorage) -
     return {
         "db_session_factory": _SingleSessionFactory(worker_db_session),
         "storage": tenant_storage,
+        "provider_access": TEST_ACCESS,
     }

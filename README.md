@@ -31,11 +31,9 @@ shared by both — neither app depends on the other.
 cp .env.example .env
 ```
 
-Fill in at minimum `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` before the reviewer can make real LLM
-calls. Provider/model config is env-based for now (`REVU_MODEL_REVIEW`) rather than the DB-backed
-per-org `ai_providers`/`model_routes` design the schema already supports — that lands once the
-Next.js frontend has a screen to manage encrypted credentials through (see `IMPLEMENTATION_PLAN.md`
-Stage 3). Everything else has a working development default. Generate real secrets for
+LLM providers are **not** configured here: each organisation adds them on the AI Providers screen
+(see "AI providers" below), and their keys are stored encrypted in the database. Everything else
+has a working development default. Generate real secrets for
 `JWT_SECRET_KEY` and `CREDENTIAL_ENCRYPTION_KEY` before this ever runs anywhere but your laptop —
 the commands to generate them are commented next to each variable in `.env.example`.
 
@@ -153,6 +151,34 @@ table. A catalog test fails if a future table gains `org_id` without a policy.
   organisation, so "owner" can't be the bar for the App every organisation installs. Grant it
   with `REVU_PLATFORM_ADMIN_EMAILS` or
   `docker compose exec api python -m api.cli platform-admin grant you@example.com`.
+
+## AI providers (configured per organisation, never in `.env`)
+
+Reviews use whatever provider and model the organisation chose, per step (`screen`, `review`,
+`verify`), on the AI Providers screen (`/providers` API):
+
+| Kind | What it covers |
+|---|---|
+| `anthropic`, `openai`, `groq` | The hosted APIs, with LiteLLM's built-in endpoints |
+| `openai_compatible` | Anything speaking the OpenAI chat-completions API: **Ollama**, vLLM, LM Studio, llama.cpp, NVIDIA NIM, or a company's own fine-tuned model. Takes an endpoint URL, an optional key and optional extra headers |
+| `bedrock`, `azure`, `vertex` | Reserved; shown as "coming soon" |
+
+- **Keys** are encrypted with AES-256-GCM, bound to the organisation and provider (`db.credentials`),
+  and never returned by the API (only a hint such as `gsk…1234`). Audit entries record that a key
+  changed, never its value. There is **no environment fallback**: a stray `ANTHROPIC_API_KEY` is
+  never used, and without a configured review model reviews are refused with a clear `409`.
+- **Test connection** makes three tiny calls (a reply, JSON mode, a tool call) and stores what the
+  model can do. A model that can't call tools gets diff-only reviews instead of cross-file ones,
+  and the run records why.
+- **Endpoint safety**: provider URLs are checked when saved and again before every call. Cloud
+  metadata and link-local addresses are always refused; private networks are allowed only where
+  `REVU_ALLOW_PRIVATE_PROVIDER_URLS` (default: on outside production) permits.
+- Self-hosted models usually have no LiteLLM price; set a price per million tokens on the provider
+  and cost accounting still works. Open models' `<think>` blocks and code fences around JSON are
+  tolerated.
+
+A local model through Ollama is set up in `docs/setup/local-llm-ollama.md`; from the API/worker
+containers it is reached at `http://host.docker.internal:11434/v1`.
 
 ## Tests that touch the database
 

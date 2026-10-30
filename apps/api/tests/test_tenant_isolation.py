@@ -114,7 +114,9 @@ def _seed_tenant(session: Session, name: str, installation_github_id: int) -> Te
             AuditLog(org_id=org.id, action="test", target=name),
         ]
     )
-    provider = AIProvider(org_id=org.id, kind=ProviderKind.ANTHROPIC, encrypted_credentials="x")
+    provider = AIProvider(
+        org_id=org.id, name="Anthropic", kind=ProviderKind.ANTHROPIC, encrypted_credentials="x"
+    )
     session.add(provider)
     session.flush()
     session.add(

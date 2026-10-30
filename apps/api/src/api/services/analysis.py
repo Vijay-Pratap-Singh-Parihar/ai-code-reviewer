@@ -2,17 +2,16 @@ import uuid
 from datetime import UTC, datetime
 
 from db.organization import User
+from db.provider import ModelTier
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
 from db.repository import Repository
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api.core.config import get_settings
 from api.schemas.analysis import AnalysisRequest
+from api.services.providers import route_snapshot
 from api.services.repositories import get_or_create_repository
-
-settings = get_settings()
 
 __all__ = [
     "create_analysis_run",
@@ -55,6 +54,9 @@ async def _get_or_create_pull_request(
 async def create_analysis_run(
     session: AsyncSession, *, user: User, body: AnalysisRequest
 ) -> AnalysisRun:
+    # Fails (NoModelRouteError) before anything is written when the
+    # organisation hasn't chosen a review model yet.
+    model = await route_snapshot(session, user.org_id, ModelTier.REVIEW)
     repo = await get_or_create_repository(
         session, org_id=user.org_id, full_name=body.repo_full_name
     )
@@ -65,7 +67,7 @@ async def create_analysis_run(
         org_id=pr.org_id,
         config_snapshot={
             "agent": body.agent,
-            "model": settings.revu_model_review,
+            **model,
             "head_sha": body.head_sha,
             "source": "manual",
         },

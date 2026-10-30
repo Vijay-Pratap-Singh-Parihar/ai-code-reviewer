@@ -77,6 +77,7 @@ def test_model_route_unique_per_org_and_tier(db_session: Session) -> None:
     org = _make_org(db_session)
     provider = AIProvider(
         org_id=org.id,
+        name="Anthropic",
         kind=ProviderKind.ANTHROPIC,
         encrypted_credentials="ciphertext",
         verified_at=datetime.now(UTC),

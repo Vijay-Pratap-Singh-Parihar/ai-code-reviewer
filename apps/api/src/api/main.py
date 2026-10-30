@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from api.core.config import get_settings
 from api.db.session import engine
-from api.routers import analysis, audit, auth, branch_index, github, health, repos
+from api.routers import analysis, audit, auth, branch_index, github, health, providers, repos
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -41,3 +41,4 @@ app.include_router(branch_index.router)
 app.include_router(repos.router)
 app.include_router(github.router)
 app.include_router(audit.router)
+app.include_router(providers.router)

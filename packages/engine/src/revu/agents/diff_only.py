@@ -13,7 +13,7 @@ import logging
 from pydantic import BaseModel, Field, ValidationError
 
 from revu.models import Finding, FindingCategory, RunResult, Severity
-from revu.providers.llm import CompletionResult, complete
+from revu.providers.llm import CompletionResult, ModelEndpoint, complete, extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def _build_messages(pr_title: str, pr_body: str, diff: str) -> list[dict[str, st
 
 def _parse(content: str) -> _DiffOnlyOutput | None:
     try:
-        data = json.loads(content)
+        data = extract_json(content)
     except json.JSONDecodeError:
         return None
     try:
@@ -89,7 +89,9 @@ def _merge(first: CompletionResult, second: CompletionResult) -> CompletionResul
     )
 
 
-async def review_diff(*, pr_title: str, pr_body: str, diff: str, model: str) -> RunResult:
+async def review_diff(
+    *, pr_title: str, pr_body: str, diff: str, model: str | ModelEndpoint
+) -> RunResult:
     messages = _build_messages(pr_title, pr_body, diff)
 
     result = await complete(model=model, messages=messages, response_format={"type": "json_object"})

@@ -5,6 +5,7 @@ description = "Shared SQLAlchemy models and declarative base for apps/api and ap
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "sqlalchemy[asyncio]>=2.0.36",
+    "cryptography>=43.0.3",
     "revu",
 ]
 

@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from api.core.security import decode_access_token
 from api.db.session import get_db
 from api.main import app
+from api.testing import configure_review_model
 from db.branch_index import BranchIndex, BranchIndexStatus
 from db.tenancy import bind_org
 from httpx import AsyncClient
@@ -27,6 +28,8 @@ async def _signup_and_get_token(client: AsyncClient, email: str) -> str:
     )
     assert response.status_code == 201, response.text
     token: str = response.json()["access_token"]
+    # Reviews refuse to queue until the organisation has chosen a model.
+    await configure_review_model(client, {"Authorization": f"Bearer {token}"})
     return token
 
 

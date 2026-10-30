@@ -6,6 +6,7 @@ import pytest
 import rustworkx as rx
 from db.branch_index import BranchIndex, BranchIndexStatus
 from db.organization import Organization
+from db.provider import AIProvider
 from db.pull_request import (
     AnalysisRun,
     AnalysisRunStatus,
@@ -16,11 +17,13 @@ from db.pull_request import (
 from db.repository import Repository
 from db.tenancy import bind_org
 from revu.models import EvidenceItem, Finding, FindingCategory, RunResult, Severity
+from revu.providers.llm import ModelEndpoint
 from revu.verify import VerificationReport, VerificationResult
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from worker.jobs import analyze
 from worker.storage import TenantStorage
+from worker.testing import TEST_ACCESS, review_provider
 
 
 async def _make_repo(session: AsyncSession, *, name: str = "acme/widgets") -> Repository:
@@ -43,8 +46,13 @@ async def _make_run(
     model: str = "fake-model",
     agent: str = "diff_only",
     branch_index_id: uuid.UUID | None = None,
+    supports_tools: bool | None = None,
 ) -> tuple[AnalysisRun, Repository]:
     repo = repo or await _make_repo(session)
+    await bind_org(session, repo.org_id)
+    provider = await review_provider(
+        session, repo.org_id, model=model, supports_tools=supports_tools
+    )
     pr = PullRequest(
         repo_id=repo.id,
         number=1,
@@ -62,7 +70,7 @@ async def _make_run(
     run = AnalysisRun(
         pr_id=pr.id,
         branch_index_id=branch_index_id,
-        config_snapshot={"agent": agent, "model": model},
+        config_snapshot={"agent": agent, **provider},
         status=AnalysisRunStatus.QUEUED,
         diff_text="diff text",
     )
@@ -214,7 +222,78 @@ async def test_analyze_pr_uses_model_from_config_snapshot(
 
     await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
 
-    assert captured["model"] == "claude-haiku-4-5"
+    endpoint = captured["model"]
+    assert isinstance(endpoint, ModelEndpoint)
+    # The run's own provider, resolved and decrypted by the worker; never
+    # anything from the environment.
+    assert endpoint.model == "openai/claude-haiku-4-5"
+    assert endpoint.api_key == "sk-test-key"
+    assert endpoint.api_base == "http://127.0.0.1:11434/v1"
+
+
+async def test_a_model_without_tool_calling_gets_a_diff_only_review_instead(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, repo = await _make_run(worker_db_session, agent="cross_file", supports_tools=False)
+    called: list[str] = []
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        called.append("diff_only")
+        return RunResult()
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+    monkeypatch.setattr(analyze, "review_cross_file", pytest.fail)
+
+    await analyze.execute_review(
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path="/tmp/acme-widgets",
+        storage=tenant_storage,
+        provider_access=TEST_ACCESS,
+    )
+
+    await worker_db_session.refresh(run)
+    assert called == ["diff_only"]
+    assert run.status == AnalysisRunStatus.SUCCEEDED
+    assert "can't call tools" in run.config_snapshot["agent_fallback"]
+
+
+async def test_a_run_whose_provider_was_deleted_fails_with_a_clear_reason(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object]
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+    provider = await worker_db_session.get(
+        AIProvider, uuid.UUID(run.config_snapshot["provider_id"])
+    )
+    await worker_db_session.delete(provider)
+    await worker_db_session.flush()
+
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "has been deleted" in (run.error or "")
+
+
+async def test_a_run_without_a_recorded_provider_never_falls_back_to_the_environment(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+    run.config_snapshot = {"agent": "diff_only", "model": "claude-sonnet-5"}
+    await worker_db_session.flush()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-from-the-environment")
+    monkeypatch.setattr(analyze, "review_diff", pytest.fail)
+
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "no AI provider recorded" in (run.error or "")
 
 
 async def test_analyze_pr_returns_early_when_run_missing(
@@ -317,6 +396,7 @@ async def test_cross_file_review_loads_graph_and_runs_through_verifier(
         agent="cross_file",
         repo_path="/tmp/acme-widgets",
         storage=tenant_storage,
+        provider_access=TEST_ACCESS,
     )
 
     assert captured_load["signing_key"] == tenant_storage.signing_key
@@ -363,6 +443,7 @@ async def test_cross_file_review_refuses_another_repositorys_index(
         agent="cross_file",
         repo_path="/tmp/acme-widgets",
         storage=tenant_storage,
+        provider_access=TEST_ACCESS,
     )
 
     await worker_db_session.refresh(run)
@@ -392,6 +473,7 @@ async def test_cross_file_review_refuses_a_graph_outside_the_repos_index_dir(
         agent="cross_file",
         repo_path="/tmp/acme-widgets",
         storage=tenant_storage,
+        provider_access=TEST_ACCESS,
     )
 
     await worker_db_session.refresh(run)
@@ -414,6 +496,7 @@ async def test_cross_file_review_without_a_checkout_fails(
         agent="cross_file",
         repo_path=None,
         storage=tenant_storage,
+        provider_access=TEST_ACCESS,
     )
 
     await worker_db_session.refresh(run)
@@ -436,6 +519,7 @@ async def test_cross_file_review_without_branch_index_id_fails(
         agent="cross_file",
         repo_path="/tmp/acme-widgets",
         storage=tenant_storage,
+        provider_access=TEST_ACCESS,
     )
 
     await worker_db_session.refresh(run)

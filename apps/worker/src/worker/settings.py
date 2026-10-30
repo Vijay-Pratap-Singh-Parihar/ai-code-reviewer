@@ -19,6 +19,7 @@ from worker.jobs.retention import (
     purge_installation_data,
     purge_repository_data,
 )
+from worker.providers import ProviderAccess
 from worker.storage import TenantStorage, signing_key_from_secret
 
 # apps/worker/src/worker/settings.py -> repo root is four levels up.
@@ -31,6 +32,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(".env", _REPO_ROOT_ENV), extra="ignore")
 
     environment: str = "development"
+    # Same meaning as the API's: may AI provider endpoints be on private or
+    # loopback networks? Unset = yes outside production, no in production.
+    revu_allow_private_provider_urls: bool | None = None
     redis_url: str = "redis://localhost:6379/0"
     # Row-level security applies: see `db.tenancy`. Jobs bind each session
     # to the organisation named in their arguments.
@@ -109,6 +113,13 @@ class WorkerSettings:
         ctx["github_api_url"] = settings.github_api_url
         ctx["git_base_url"] = settings.github_web_url
         ctx["retention_days"] = settings.revu_disconnected_retention_days
+        allow_private = settings.revu_allow_private_provider_urls
+        ctx["provider_access"] = ProviderAccess(
+            secret=settings.credential_encryption_key,
+            allow_private=(
+                settings.environment != "production" if allow_private is None else allow_private
+            ),
+        )
         ctx["storage"] = TenantStorage(
             repo_cache_root=Path(settings.revu_repo_cache_dir).resolve(),
             index_root=Path(settings.revu_index_storage_dir).resolve(),
