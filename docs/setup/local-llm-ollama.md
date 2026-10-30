@@ -155,4 +155,37 @@ Start-Process "D:\Ollama\installer\OllamaSetup-0.40.13.exe" -ArgumentList '/DIR=
 
 **How to undo.** Run the older installer the same way (quit Ollama, same `/DIR` and switches). Models are unaffected.
 
-<!-- Steps 5+ are appended as they are performed. -->
+## 5. Download the models and measure them on this laptop
+
+```powershell
+ollama pull qwen3.5:9b   # 6.6 GB, the first choice
+ollama pull qwen3.5:4b   # 3.3 GB, added after measuring 9b
+ollama list
+```
+
+**Why.** Qwen 3.5 is an open-weight model family that is strong at code and has an OpenAI-compatible API through Ollama, which is what revu's "OpenAI-compatible" provider talks to. 9b was tried first for quality. Then 4b was added, because the measurements below showed 9b does not fit this GPU.
+
+**How it was measured.** Every model got the same prompt through Ollama's HTTP API: review a two-line diff and answer in JSON. The diff was `return sum(xs) / len(xs)`, which has an obvious divide-by-zero bug on an empty list. Speed comes from Ollama's own `eval_count` / `eval_duration`. GPU share comes from `GET /api/ps` (`size_vram`).
+
+| Model | Context | Thinking | Load (cold) | Speed | Model in GPU | Found the bug? |
+|---|---|---|---|---|---|---|
+| qwen3.5:9b | 32k | off | 66 s | 4.6 tok/s | 1.7 of 7.4 GB | no |
+| qwen3.5:9b | 8k | on | – | – | 1.7 of 6.4 GB | no answer within 15 min |
+| qwen3.5:4b | 32k | off | 7 s | 10.3 tok/s | 1.9 of 4.9 GB | no |
+| qwen3.5:4b | 8k | off | 7.5 s | 11.9 tok/s | 1.9 of 3.9 GB | no |
+| qwen3.5:4b | 8k | on | – | 7.6 tok/s (2,110 tokens, 280 s) | 1.9 of 3.9 GB | **yes**, high severity, with the right fix |
+
+**What it means.**
+- The GTX 1650 has 4 GB of video memory, and only about 1.9 GB of a model fits next to Windows' own use. The rest runs on the CPU, so speed is set by how much of the model spills over.
+- 4b is about 2.5× faster than 9b and loads ten times sooner. **qwen3.5:4b is the demo model on this laptop.**
+- With thinking off, both sizes answered instantly but missed the bug. With thinking on, 4b found it but needed almost 5 minutes for two lines.
+- This is one prompt, so it is not a benchmark. Quality is measured properly with `revu-bench`.
+- For a live demo, use a very small PR and expect minutes per review.
+- Real reviews and the benchmark use a hosted provider (Groq) or a machine with a larger GPU. Both connect through the same AI Providers screen.
+- Ollama's OpenAI-compatible endpoint has thinking **on by default**: a one-word reply took 32 s on 9b.
+
+**What it affects.** 9.9 GB on D: under `D:\Ollama\models`. A loaded model uses RAM and video memory until it has been idle for 5 minutes, then Ollama unloads it.
+
+**How to undo.** `ollama rm qwen3.5:9b` (or `qwen3.5:4b`) frees its space. Deleting 9b is reasonable on this laptop, since 4b is the one in use.
+
+<!-- Steps 6+ are appended as they are performed. -->
