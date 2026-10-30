@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Pencil, Plus } from "lucide-react";
 import {
@@ -117,6 +118,8 @@ export function AiProviders() {
   const kinds = useQuery({ queryKey: ["provider-kinds"], queryFn: listProviderKinds });
   const providers = useQuery({ queryKey: ["providers"], queryFn: listProviders });
   const routes = useQuery({ queryKey: ["model-routes"], queryFn: listModelRoutes });
+  // Kept here, not in the card: saving re-mounts the card with the new routes.
+  const [savedRoutes, setSavedRoutes] = useState<string | null>(null);
 
   if (kinds.isPending || providers.isPending || routes.isPending) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
@@ -137,6 +140,8 @@ export function AiProviders() {
         routes={routes.data ?? []}
         providers={providers.data ?? []}
         canEdit={canEdit}
+        saved={savedRoutes !== null && savedRoutes === JSON.stringify(routes.data)}
+        onSaved={(updated) => setSavedRoutes(JSON.stringify(updated))}
       />
 
       <Card>

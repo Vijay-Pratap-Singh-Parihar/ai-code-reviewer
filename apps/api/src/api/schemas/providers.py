@@ -4,6 +4,7 @@ from typing import Literal
 
 from db.provider import ModelTier, ProviderKind
 from pydantic import BaseModel, Field, field_validator
+from revu.providers.llm import Reasoning
 
 
 class ProviderKindInfo(BaseModel):
@@ -108,6 +109,7 @@ class ModelRoutePublic(BaseModel):
     provider_id: uuid.UUID
     provider_name: str
     model: str
+    reasoning: Reasoning | None
     updated_at: datetime | None
 
 
@@ -116,6 +118,9 @@ class ModelRouteUpdate(BaseModel):
 
     provider_id: uuid.UUID
     model: str = Field(min_length=1, max_length=255)
+    # How much the model may think before answering; `null` leaves it to
+    # the model (open models such as Qwen think by default).
+    reasoning: Reasoning | None = None
 
 
 class RouteSet(BaseModel):

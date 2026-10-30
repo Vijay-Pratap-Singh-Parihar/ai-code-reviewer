@@ -100,7 +100,7 @@ export function ProviderTestDialog({ provider }: { provider: ProviderPublic }) {
                 list={listId}
                 value={model}
                 onChange={(event) => setModel(event.target.value)}
-                placeholder={provider.kind === "openai_compatible" ? "qwen3.5:9b" : "model id"}
+                placeholder={provider.kind === "openai_compatible" ? "qwen3.5:4b" : "model id"}
               />
               <Button type="button" variant="outline" disabled={models.isPending} onClick={() => models.mutate()}>
                 {models.isPending ? "Loading…" : "List models"}

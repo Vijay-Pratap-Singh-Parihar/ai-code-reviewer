@@ -198,11 +198,45 @@ describe("AiProviders", () => {
 
     await waitFor(() =>
       expect(setModelRoutes).toHaveBeenCalledWith({
-        review: { provider_id: "p1", model: "openai/gpt-oss-120b" },
+        review: { provider_id: "p1", model: "openai/gpt-oss-120b", reasoning: null },
         screen: null,
         verify: null,
       }),
     );
+  });
+
+  it("saves a thinking level per step and shows the saved one", async () => {
+    vi.mocked(listProviders).mockResolvedValue([provider()]);
+    vi.mocked(listModelRoutes).mockResolvedValue([
+      {
+        tier: "review",
+        provider_id: "p1",
+        provider_name: "Groq",
+        model: "qwen3.5:4b",
+        reasoning: "high",
+        updated_at: null,
+      },
+    ]);
+    const user = userEvent.setup();
+    renderPage();
+
+    const thinking = await screen.findByRole("combobox", { name: /review thinking/i });
+    expect(thinking).toHaveTextContent("Thinking: High");
+    expect(screen.getByRole("combobox", { name: /screen thinking/i })).toBeDisabled();
+
+    await user.click(thinking);
+    await user.click(await screen.findByRole("option", { name: "Off (fastest)" }));
+    await user.click(screen.getByRole("button", { name: /save models/i }));
+
+    await waitFor(() =>
+      expect(setModelRoutes).toHaveBeenCalledWith({
+        review: { provider_id: "p1", model: "qwen3.5:4b", reasoning: "off" },
+        screen: null,
+        verify: null,
+      }),
+    );
+    // Saving re-mounts the card with the saved routes; the confirmation survives that.
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
   });
 
   it("deletes a provider after its name is typed", async () => {

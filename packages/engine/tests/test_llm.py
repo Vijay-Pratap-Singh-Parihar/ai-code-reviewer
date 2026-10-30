@@ -137,3 +137,69 @@ def test_extract_json_still_fails_when_there_is_no_object() -> None:
 
     with pytest.raises(json.JSONDecodeError):
         llm.extract_json("I could not find any issues.")
+
+
+async def _sent_for(
+    monkeypatch: pytest.MonkeyPatch, endpoint: llm.ModelEndpoint
+) -> dict[str, object]:
+    seen: dict[str, object] = {}
+
+    async def fake_acompletion(**kwargs: object) -> _FakeResponse:
+        seen.update(kwargs)
+        return _FakeResponse("x")
+
+    monkeypatch.setattr(llm.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm.litellm, "completion_cost", lambda **kwargs: 0.0)
+    await llm.complete(model=endpoint, messages=[{"role": "user", "content": "hi"}])
+    return seen
+
+
+OLLAMA = "http://127.0.0.1:11434/v1"
+
+
+async def test_reasoning_left_unset_sends_nothing_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent = await _sent_for(monkeypatch, llm.ModelEndpoint("openai/qwen3.5:4b", "k", OLLAMA))
+    assert "reasoning_effort" not in sent
+    assert sent["temperature"] == 0.0
+
+
+@pytest.mark.parametrize(
+    "model", ["openai/qwen3.5:4b", "groq/qwen/qwen3-32b", "anthropic/claude-sonnet-5"]
+)
+async def test_reasoning_off_is_sent_explicitly(
+    monkeypatch: pytest.MonkeyPatch, model: str
+) -> None:
+    """Open models such as Qwen think unless told not to, so "off" must be
+    sent, not just left out."""
+    api_base = OLLAMA if model.startswith("openai/") else None
+    sent = await _sent_for(monkeypatch, llm.ModelEndpoint(model, "k", api_base, reasoning="off"))
+    assert sent["reasoning_effort"] == "none"
+    assert sent["temperature"] == 0.0
+
+
+async def test_reasoning_on_a_self_hosted_model_keeps_the_temperature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = await _sent_for(
+        monkeypatch, llm.ModelEndpoint("openai/qwen3.5:4b", "k", OLLAMA, reasoning="high")
+    )
+    assert sent["reasoning_effort"] == "high"
+    assert sent["temperature"] == 0.0
+    assert "max_tokens" not in sent
+
+
+async def test_anthropic_thinking_drops_temperature_and_makes_room_for_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = await _sent_for(
+        monkeypatch, llm.ModelEndpoint("anthropic/claude-sonnet-5", "k", reasoning="medium")
+    )
+    assert sent["reasoning_effort"] == "medium"
+    assert "temperature" not in sent  # Anthropic rejects a custom temperature while thinking
+    assert sent["max_tokens"] == 16_000
+
+
+async def test_hosted_openai_reasoning_drops_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent = await _sent_for(monkeypatch, llm.ModelEndpoint("openai/gpt-5", "k", reasoning="low"))
+    assert sent["reasoning_effort"] == "low"
+    assert "temperature" not in sent

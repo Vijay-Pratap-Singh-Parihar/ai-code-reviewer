@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from db.ai_endpoints import endpoint_for
 from db.provider import AIProvider
 from db.pull_request import AnalysisRun
-from revu.providers.llm import ModelEndpoint
+from revu.providers.llm import REASONING_LEVELS, ModelEndpoint, Reasoning
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -49,6 +49,13 @@ async def endpoint_for_run(
     provider = await session.get(AIProvider, uuid.UUID(str(provider_id)))
     if provider is None:
         raise RuntimeError("the AI provider this review was queued with has been deleted")
+    # Runs queued before the setting existed have no "reasoning": model default.
+    raw = snapshot.get("reasoning")
+    reasoning = cast(Reasoning, raw) if raw in REASONING_LEVELS else None
     return await endpoint_for(
-        provider, str(snapshot["model"]), secret=access.secret, allow_private=access.allow_private
+        provider,
+        str(snapshot["model"]),
+        secret=access.secret,
+        allow_private=access.allow_private,
+        reasoning=reasoning,
     )

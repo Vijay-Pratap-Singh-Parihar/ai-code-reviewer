@@ -15,7 +15,7 @@ from api.main import app
 from api.services import providers as provider_service
 from db.credentials import decrypt_credentials
 from db.organization import User, UserRole
-from db.provider import AIProvider
+from db.provider import AIProvider, ModelTier
 from db.tenancy import bind_org
 from httpx import AsyncClient
 from revu.providers.llm import CompletionResult, ToolCall
@@ -219,6 +219,52 @@ async def test_routes_choose_a_provider_and_model_per_step_and_deletion_removes_
     assert deleted.status_code == 204 and after == []
     [entry] = [e for e in await _audit(api_client, headers) if e["action"] == "ai_provider.deleted"]
     assert entry["metadata"]["routes_removed"] == ["review"]
+
+
+async def test_each_step_saves_its_own_thinking_setting_and_runs_record_it(
+    api_client: AsyncClient,
+) -> None:
+    headers = await _signup(api_client, "thinking@example.com")
+    provider = (await _create(api_client, headers)).json()
+
+    put = await api_client.put(
+        "/providers/routes",
+        json={
+            "routes": {
+                "review": {
+                    "provider_id": provider["id"],
+                    "model": "qwen3.5:4b",
+                    "reasoning": "off",
+                },
+                "screen": {"provider_id": provider["id"], "model": "qwen3.5:4b"},
+            }
+        },
+        headers=headers,
+    )
+    bad = await api_client.put(
+        "/providers/routes",
+        json={
+            "routes": {"review": {"provider_id": provider["id"], "model": "m", "reasoning": "max"}}
+        },
+        headers=headers,
+    )
+
+    assert put.status_code == 200, put.text
+    assert {r["tier"]: r["reasoning"] for r in put.json()} == {"screen": None, "review": "off"}
+    assert bad.status_code == 422
+    [entry] = [
+        e for e in await _audit(api_client, headers) if e["action"] == "model_routes.changed"
+    ]
+    assert entry["metadata"]["review"].endswith("(thinking: off)")
+
+    async for session in app.dependency_overrides[get_db]():
+        await bind_org(session, decode_access_token(headers["Authorization"][7:]).org_id)
+        snapshot = await provider_service.route_snapshot(
+            session, decode_access_token(headers["Authorization"][7:]).org_id, ModelTier.REVIEW
+        )
+        break
+    assert snapshot["model"] == "qwen3.5:4b"
+    assert snapshot["reasoning"] == "off"
 
 
 def _fake_complete(*, json_ok: bool = True, calls_tool: bool = True, fail: bool = False) -> Any:

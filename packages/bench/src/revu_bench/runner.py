@@ -27,7 +27,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 from revu.agents.diff_only import review_diff
 from revu.models import Finding, RunResult
-from revu.providers.llm import ModelEndpoint
+from revu.providers.llm import ModelEndpoint, Reasoning
 
 from revu_bench.schema import BenchInstance, PredictedFinding, RunRecord
 
@@ -42,9 +42,12 @@ class SystemConfig(BaseModel):
 
     name: str
     agent: Agent = "diff_only"
-    model: str  # LiteLLM model string, e.g. "openai/qwen3.5:9b"
+    model: str  # LiteLLM model string, e.g. "openai/qwen3.5:4b"
     api_base: str | None = None
     api_key_env: str | None = None  # name of the env var holding the key
+    # Thinking on/off is part of what is being compared: list the same
+    # model twice with different `reasoning` to measure what it buys.
+    reasoning: Reasoning | None = None
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
 
@@ -56,6 +59,7 @@ class SystemConfig(BaseModel):
             model=self.model,
             api_key=key or NO_KEY,
             api_base=self.api_base,
+            reasoning=self.reasoning,
             input_cost_per_mtok=self.input_cost_per_mtok,
             output_cost_per_mtok=self.output_cost_per_mtok,
         )
@@ -215,8 +219,10 @@ def dump_config_template(path: Path) -> None:
             SystemConfig(
                 name="B0-local-qwen",
                 agent="diff_only",
-                model="openai/qwen3.5:9b",
+                model="openai/qwen3.5:4b",
                 api_base="http://127.0.0.1:11434/v1",
+                # Qwen thinks by default; on a small GPU that is minutes per diff.
+                reasoning="off",
             ),
             SystemConfig(
                 name="B0-groq-gpt-oss-120b",

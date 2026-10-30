@@ -521,15 +521,21 @@ export type ProviderTestResult = {
   cost_usd: number;
 };
 
+/** How much a model may think before answering; `null` leaves it to the model. */
+export type Reasoning = "off" | "low" | "medium" | "high";
+
 export type ModelRoutePublic = {
   tier: ModelTier;
   provider_id: string;
   provider_name: string;
   model: string;
+  reasoning: Reasoning | null;
   updated_at: string | null;
 };
 
-export type RouteUpdate = Partial<Record<ModelTier, { provider_id: string; model: string } | null>>;
+export type RouteUpdate = Partial<
+  Record<ModelTier, { provider_id: string; model: string; reasoning: Reasoning | null } | null>
+>;
 
 export function listProviderKinds(): Promise<ProviderKindInfo[]> {
   return apiFetchJson<ProviderKindInfo[]>("/providers/kinds");
