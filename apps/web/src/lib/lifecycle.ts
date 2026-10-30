@@ -33,6 +33,11 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   "index.requested": "Index build requested",
   "data.deletion_requested": "Data deletion requested",
   "data.purged": "Data deleted",
+  "ai_provider.created": "AI provider added",
+  "ai_provider.updated": "AI provider changed",
+  "ai_provider.deleted": "AI provider deleted",
+  "ai_provider.tested": "AI provider tested",
+  "model_routes.changed": "Review models changed",
 };
 
 export function auditActionLabel(action: string): string {
