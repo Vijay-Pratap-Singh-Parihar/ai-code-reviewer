@@ -95,7 +95,13 @@ async def _session() -> AsyncIterator[AsyncSession]:
 async def _signup(client: AsyncClient, email: str) -> dict[str, str]:
     response = await client.post(
         "/auth/signup",
-        json={"org_name": "Acme Inc", "email": email, "password": "correct-horse-battery"},
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "org_name": "Acme Inc",
+            "email": email,
+            "password": "correct-horse-battery",
+        },
     )
     assert response.status_code == 201, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}

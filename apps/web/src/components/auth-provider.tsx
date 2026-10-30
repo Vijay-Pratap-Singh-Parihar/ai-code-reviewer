@@ -41,9 +41,14 @@ export function useAuth() {
     setAuthState({ accessToken: result.access_token, user: result.user, status: "authenticated" });
   }, []);
 
-  const signup = useCallback(async (orgName: string, email: string, password: string) => {
-    const result = await api.signup({ org_name: orgName, email, password });
+  const signup = useCallback(async (input: Parameters<typeof api.signup>[0]) => {
+    const result = await api.signup(input);
     setAuthState({ accessToken: result.access_token, user: result.user, status: "authenticated" });
+  }, []);
+
+  const updateProfile = useCallback(async (input: { first_name: string; last_name: string }) => {
+    const user = await api.updateProfile(input);
+    setAuthState({ user });
   }, []);
 
   const logout = useCallback(async () => {
@@ -54,5 +59,5 @@ export function useAuth() {
     }
   }, []);
 
-  return { ...state, login, signup, logout };
+  return { ...state, login, signup, logout, updateProfile };
 }

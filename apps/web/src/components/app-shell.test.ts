@@ -8,6 +8,8 @@ describe("sectionTitle", () => {
     ["/repositories/abc", "Repositories"],
     ["/github/setup", "GitHub"],
     ["/runs/abc", "Review"],
+    ["/providers", "AI Providers"],
+    ["/audit", "Audit log"],
   ])("labels %s as %s", (path, title) => {
     expect(sectionTitle(path)).toBe(title);
   });

@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, Plug } from "lucide-react";
 import { completeAppManifest, formatApiError } from "@/lib/api-client";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 
 // The manifest `code` is single-use; see github-setup-handler for why this
 // guard exists alongside the ref (React StrictMode double-runs effects).
@@ -73,10 +73,10 @@ export function GitHubAppCreatedHandler({ code, state }: { code: string | null; 
         Last step: install it on the repositories you want reviewed. Auto-review stays off for each
         repository until you turn it on.
       </p>
-      <Button render={<a href={info.install_url ?? "/github"} />}>
+      <a href={info.install_url ?? "/github"} className={buttonVariants()}>
         <Plug />
         Install on your repositories
-      </Button>
+      </a>
     </div>
   );
 }

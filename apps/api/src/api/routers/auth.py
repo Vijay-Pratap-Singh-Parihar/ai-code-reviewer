@@ -7,7 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.core.config import get_settings
 from api.core.deps import CurrentUser
 from api.db.session import get_db
-from api.schemas.auth import AccessTokenResponse, LoginRequest, SignupRequest, UserPublic
+from api.schemas.auth import (
+    AccessTokenResponse,
+    LoginRequest,
+    ProfileUpdate,
+    SignupRequest,
+    UserPublic,
+)
 from api.services import auth as auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -44,7 +50,12 @@ async def signup(
 ) -> AccessTokenResponse:
     try:
         user, tokens = await auth_service.signup(
-            db, org_name=body.org_name, email=body.email, password=body.password
+            db,
+            org_name=body.org_name,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            email=body.email,
+            password=body.password,
         )
     except auth_service.EmailAlreadyRegisteredError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered") from exc
@@ -103,4 +114,15 @@ async def logout(
 
 @router.get("/me", response_model=UserPublic)
 async def me(user: CurrentUser) -> UserPublic:
+    return UserPublic.model_validate(user)
+
+
+@router.patch("/me", response_model=UserPublic)
+async def update_me(
+    body: ProfileUpdate, user: CurrentUser, db: Annotated[AsyncSession, Depends(get_db)]
+) -> UserPublic:
+    """Your own name; nobody else's, and nothing else about the account."""
+    user.first_name = body.first_name
+    user.last_name = body.last_name
+    await db.commit()
     return UserPublic.model_validate(user)

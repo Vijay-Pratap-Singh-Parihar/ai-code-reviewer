@@ -2,6 +2,7 @@
 
 import { useState, type FormEvent, type ReactElement } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Check, Loader2 } from "lucide-react";
 import {
   createProvider,
   formatApiError,
@@ -26,12 +27,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-/** Common OpenAI-compatible servers, as reached from revu's API and worker containers. */
-export const ENDPOINT_PRESETS: { label: string; url: string }[] = [
-  { label: "Ollama on this machine", url: "http://host.docker.internal:11434/v1" },
-  { label: "LM Studio on this machine", url: "http://host.docker.internal:1234/v1" },
-  { label: "vLLM server", url: "http://vllm.internal:8000/v1" },
-];
+/** A name to start from, so the field is never blank (or autofilled by the browser). */
+function suggestedName(kind: ProviderKind, kinds: ProviderKindInfo[], presetLabel?: string): string {
+  if (kind === "openai_compatible") {
+    const server = presetLabel?.split(" ")[0];
+    return server ? `Local ${server}` : "My model server";
+  }
+  return kinds.find((k) => k.kind === kind)?.label ?? "";
+}
+
+// Password managers treat any form with a password field as a login form and
+// fill the field before it with the user's email; these opt out of that.
+const NO_AUTOFILL = { autoComplete: "off", "data-1p-ignore": true, "data-lpignore": "true", "data-bwignore": true };
 
 function numberOrNull(value: string): number | null {
   const trimmed = value.trim();
@@ -59,7 +66,8 @@ export function ProviderFormDialog({
   const firstAvailable = kinds.find((k) => k.available)?.kind ?? "anthropic";
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState<ProviderKind>(provider?.kind ?? firstAvailable);
-  const [name, setName] = useState(provider?.name ?? "");
+  const [name, setName] = useState(provider?.name ?? suggestedName(firstAvailable, kinds));
+  const [nameEdited, setNameEdited] = useState(editing);
   const [baseUrl, setBaseUrl] = useState(provider?.base_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
@@ -70,7 +78,8 @@ export function ProviderFormDialog({
 
   function reset() {
     setKind(provider?.kind ?? firstAvailable);
-    setName(provider?.name ?? "");
+    setName(provider?.name ?? suggestedName(firstAvailable, kinds));
+    setNameEdited(editing);
     setBaseUrl(provider?.base_url ?? "");
     setApiKey("");
     setClearKey(false);
@@ -131,13 +140,20 @@ export function ProviderFormDialog({
             Keys are stored encrypted and are never shown again, only their last characters.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} autoComplete="off" className="flex flex-col gap-4">
           {!editing && (
             <div className="flex flex-col gap-1.5">
               <span id="provider-kind-label" className="text-sm font-medium">
                 Provider
               </span>
-              <Select value={kind} onValueChange={(value) => setKind(value as ProviderKind)}>
+              <Select
+                value={kind}
+                onValueChange={(value) => {
+                  const next = value as ProviderKind;
+                  setKind(next);
+                  if (!nameEdited) setName(suggestedName(next, kinds));
+                }}
+              >
                 <SelectTrigger aria-labelledby="provider-kind-label" className="w-full">
                   <SelectValue>{() => info?.label ?? kind}</SelectValue>
                 </SelectTrigger>
@@ -154,15 +170,21 @@ export function ProviderFormDialog({
           )}
 
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="provider-name">Name</Label>
+            <Label htmlFor="provider-name">Display name</Label>
             <Input
               id="provider-name"
+              name="provider-display-name"
+              {...NO_AUTOFILL}
               required
               maxLength={100}
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                setNameEdited(true);
+              }}
               placeholder={kind === "openai_compatible" ? "Local Ollama" : info?.label}
             />
+            <p className="text-xs text-muted-foreground">How this provider appears when you choose models.</p>
           </div>
 
           {info?.needs_base_url && (
@@ -174,21 +196,32 @@ export function ProviderFormDialog({
                 type="url"
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
-                placeholder="http://host.docker.internal:11434/v1"
+                {...NO_AUTOFILL}
+                placeholder={info.presets?.[0]?.url ?? "https://models.example.com/v1"}
               />
-              <div className="flex flex-wrap gap-1.5">
-                {ENDPOINT_PRESETS.map((preset) => (
-                  <Button
-                    key={preset.url}
-                    type="button"
-                    variant="outline"
-                    size="xs"
-                    onClick={() => setBaseUrl(preset.url)}
-                  >
-                    {preset.label}
-                  </Button>
-                ))}
-              </div>
+              {info.presets && info.presets.length > 0 && (
+                <div className="flex flex-wrap gap-1.5" role="group" aria-label="Common servers">
+                  {info.presets.map((preset) => {
+                    const chosen = baseUrl === preset.url;
+                    return (
+                      <Button
+                        key={preset.url}
+                        type="button"
+                        variant={chosen ? "secondary" : "outline"}
+                        size="xs"
+                        aria-pressed={chosen}
+                        onClick={() => {
+                          setBaseUrl(preset.url);
+                          if (!nameEdited) setName(suggestedName(kind, kinds, preset.label));
+                        }}
+                      >
+                        {chosen && <Check />}
+                        {preset.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              )}
               <p className="text-xs text-muted-foreground">
                 Any server with an OpenAI-compatible <code>/v1/chat/completions</code> API: Ollama, vLLM,
                 LM Studio, llama.cpp, NVIDIA NIM, or your company&apos;s own fine-tuned model.
@@ -203,7 +236,10 @@ export function ProviderFormDialog({
             <Input
               id="provider-key"
               type="password"
-              autoComplete="off"
+              autoComplete="new-password"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
               required={!editing && Boolean(info?.needs_api_key)}
               disabled={clearKey}
               value={apiKey}
@@ -263,6 +299,7 @@ export function ProviderFormDialog({
           )}
           <DialogFooter>
             <Button type="submit" disabled={save.isPending}>
+              {save.isPending && <Loader2 className="animate-spin" />}
               {save.isPending ? "Saving…" : editing ? "Save changes" : "Add provider"}
             </Button>
           </DialogFooter>
