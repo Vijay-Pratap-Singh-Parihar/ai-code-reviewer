@@ -113,3 +113,21 @@ async def test_oauth_exchange_bad_code_raises(config: GitHubAppConfig) -> None:
     async with _client(config, handler) as gh:
         with pytest.raises(GitHubError, match="expired"):
             await gh.exchange_oauth_code("stale")
+
+
+@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ReadTimeout])
+async def test_unreachable_github_is_a_github_error_not_a_crash(
+    config: GitHubAppConfig, failure: type[httpx.TransportError]
+) -> None:
+    """Regression: with GitHub unreachable (DNS failure, timeout) the raw httpx
+    exception escaped every `except GitHubError` and became a bare 500."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise failure("getaddrinfo failed", request=request)
+
+    async with _client(config, handler) as gh:
+        with pytest.raises(GitHubError) as caught:
+            await gh.create_installation_token(42)
+
+    assert caught.value.status_code == 503
+    assert "couldn't reach api.github.com" in str(caught.value)
