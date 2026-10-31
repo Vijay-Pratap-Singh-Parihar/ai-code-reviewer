@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Benchmark harness for revu: datasets, matching, metrics, statistics and reports"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "asyncpg>=0.30",
+    "db",
+    "httpx>=0.27",
     "numpy>=2.0",
     "pydantic>=2.9",
     "revu",
@@ -11,6 +14,7 @@ dependencies = [
 
 [tool.uv.sources]
 revu = { workspace = true }
+db = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
