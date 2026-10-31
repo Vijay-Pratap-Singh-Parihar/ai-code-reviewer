@@ -7,6 +7,11 @@ from pydantic import BaseModel, Field, field_validator
 from revu.providers.llm import Reasoning
 
 
+class EndpointPreset(BaseModel):
+    label: str
+    url: str
+
+
 class ProviderKindInfo(BaseModel):
     kind: ProviderKind
     label: str
@@ -14,6 +19,8 @@ class ProviderKindInfo(BaseModel):
     needs_base_url: bool
     default_base_url: str | None
     available: bool
+    # Common servers for this kind, as revu's API and worker reach them.
+    presets: list[EndpointPreset] = Field(default_factory=list)
 
 
 class ProviderSettings(BaseModel):
@@ -83,6 +90,9 @@ class ProviderPublic(BaseModel):
 
 class ProviderTestRequest(BaseModel):
     model: str = Field(min_length=1, max_length=255)
+    # Test with the thinking level reviews will use: a local model that
+    # thinks by default can take minutes per call.
+    reasoning: Reasoning | None = None
 
 
 class ProbeResult(BaseModel):

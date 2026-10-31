@@ -15,7 +15,7 @@ import { useAuth } from "@/components/auth-provider";
 import { AutoReviewToggle } from "@/components/auto-review-toggle";
 import { DeleteDataDialog } from "@/components/delete-data-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 
 export function useRepositories() {
   return useQuery({ queryKey: ["repositories"], queryFn: listRepositories });
@@ -72,10 +72,10 @@ export function RepositoryRow({ repo, compact }: { repo: RepositoryPublic; compa
           />
         )}
         {linkable && !compact && (
-          <Button variant="ghost" size="sm" render={<Link href={`/repositories/${repo.id}`} />}>
+          <Link href={`/repositories/${repo.id}`} className={buttonVariants({ variant: "ghost", size: "sm" })}>
             Pull requests
             <ChevronRight />
-          </Button>
+          </Link>
         )}
       </div>
     </li>
@@ -107,10 +107,10 @@ export function RepositoryList({ limit, compact = false }: { limit?: number; com
           No GitHub repositories connected yet. Connect a GitHub account to review pull requests with one
           click, no diff pasting needed.
         </p>
-        <Button render={<Link href="/github" />}>
+        <Link href="/github" className={buttonVariants()}>
           <Plug />
           Connect GitHub
-        </Button>
+        </Link>
       </div>
     );
   }

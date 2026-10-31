@@ -84,7 +84,13 @@ async def _sync_platform_admin(session: AsyncSession, user: User) -> None:
 
 
 async def signup(
-    session: AsyncSession, *, org_name: str, email: str, password: str
+    session: AsyncSession,
+    *,
+    org_name: str,
+    first_name: str,
+    last_name: str,
+    email: str,
+    password: str,
 ) -> tuple[User, TokenPair]:
     existing = await session.scalar(select(User).where(User.email == email))
     if existing is not None:
@@ -97,6 +103,8 @@ async def signup(
     user = User(
         org_id=org.id,
         email=email,
+        first_name=first_name,
+        last_name=last_name,
         password_hash=hash_password(password),
         role=UserRole.OWNER,
     )

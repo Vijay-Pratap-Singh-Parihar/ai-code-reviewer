@@ -43,20 +43,22 @@ test("root redirects to /login when signed out", async ({ page }) => {
 
 test("sign up, sign out, and log back in, surviving a real page reload", async ({ page }) => {
   await page.goto("/signup");
+  await page.getByLabel("First name").fill("Playwright");
+  await page.getByLabel("Last name").fill("Tester");
   await page.getByLabel("Organization name").fill(ORG_NAME);
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByLabel("Password").fill(PASSWORD);
   await page.getByRole("button", { name: "Create account" }).click();
 
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByText(EMAIL)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Your profile" })).toContainText("Playwright Tester");
 
   // The access token lives in memory only; reloading must recover the
   // session from the httpOnly refresh cookie rather than bouncing to
   // /login — this is the real point of running this in an actual browser.
   await page.reload();
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByText(EMAIL)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Your profile" })).toContainText("Playwright Tester");
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(/\/login$/);
@@ -70,7 +72,7 @@ test("sign up, sign out, and log back in, surviving a real page reload", async (
   await page.getByRole("button", { name: "Sign in" }).click();
 
   await expect(page).toHaveURL(/\/dashboard$/);
-  await expect(page.getByText(EMAIL)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Your profile" })).toContainText("Playwright Tester");
 });
 
 test("wrong password shows an inline error and does not navigate", async ({ page }) => {

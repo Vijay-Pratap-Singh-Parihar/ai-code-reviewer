@@ -27,7 +27,13 @@ KEY = "gsk_live_abcdefghijklmnop1234"
 async def _signup(client: AsyncClient, email: str) -> dict[str, str]:
     response = await client.post(
         "/auth/signup",
-        json={"org_name": "Acme Inc", "email": email, "password": "correct-horse-battery"},
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "org_name": "Acme Inc",
+            "email": email,
+            "password": "correct-horse-battery",
+        },
     )
     assert response.status_code == 201, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
@@ -332,6 +338,69 @@ async def test_a_failed_connection_test_is_reported_not_raised(
     assert "connection refused" in after["last_test_error"]
 
 
+async def test_the_streamed_test_reports_each_call_as_it_happens_with_the_chosen_thinking(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = await _signup(api_client, "probe-stream@example.com")
+    provider = (await _create(api_client, headers)).json()
+    fake = _fake_complete(calls_tool=False)
+    seen_reasoning: list[Any] = []
+
+    async def recording(*, model: Any, **kwargs: Any) -> CompletionResult:
+        seen_reasoning.append(model.reasoning)
+        return await fake(model=model, **kwargs)
+
+    monkeypatch.setattr(provider_service, "complete", recording)
+
+    response = await api_client.post(
+        f"/providers/{provider['id']}/test/stream",
+        json={"model": "qwen3.5:4b", "reasoning": "off"},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    events = [json.loads(line) for line in response.text.splitlines()]
+
+    assert [(e["event"], e.get("step")) for e in events] == [
+        ("start", "reply"),
+        ("step", "reply"),
+        ("start", "json_mode"),
+        ("step", "json_mode"),
+        ("start", "tool_calling"),
+        ("step", "tool_calling"),
+        ("done", None),
+    ]
+    assert events[1]["result"]["ok"] is True and events[1]["result"]["latency_ms"] is not None
+    assert events[-1]["result"]["ok"] is True
+    assert events[-1]["result"]["tool_calling"]["ok"] is False
+    assert seen_reasoning == ["off", "off", "off"]
+    after = (await api_client.get("/providers", headers=headers)).json()[0]
+    assert after["verified_at"] is not None and after["settings"]["supports_tools"] is False
+
+
+async def test_the_streamed_test_skips_the_rest_when_the_model_does_not_reply(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    headers = await _signup(api_client, "probe-stream-fail@example.com")
+    provider = (await _create(api_client, headers)).json()
+    monkeypatch.setattr(provider_service, "complete", _fake_complete(fail=True))
+
+    response = await api_client.post(
+        f"/providers/{provider['id']}/test/stream", json={"model": "m"}, headers=headers
+    )
+    events = [json.loads(line) for line in response.text.splitlines()]
+
+    assert [(e["event"], e.get("step")) for e in events] == [
+        ("start", "reply"),
+        ("step", "reply"),
+        ("step", "json_mode"),
+        ("step", "tool_calling"),
+        ("done", None),
+    ]
+    assert events[2]["result"]["detail"].startswith("skipped")
+    assert events[-1]["result"]["ok"] is False
+
+
 async def test_model_list_is_read_from_the_provider(
     api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -360,3 +429,21 @@ async def test_model_list_is_read_from_the_provider(
     assert response.json() == {"models": ["openai/gpt-oss-120b", "qwen3"]}
     assert seen["url"] == "https://api.groq.com/openai/v1/models"
     assert seen["auth"] == f"Bearer {KEY}"
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "host.docker.internal"])
+async def test_endpoint_presets_use_the_host_revu_can_reach(
+    api_client: AsyncClient, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    from api.routers import providers as router
+
+    monkeypatch.setattr(router, "this_machine", lambda: host)
+    headers = await _signup(api_client, f"presets-{host}@example.com")
+
+    kinds = {
+        k["kind"]: k for k in (await api_client.get("/providers/kinds", headers=headers)).json()
+    }
+
+    ollama = kinds["openai_compatible"]["presets"][0]
+    assert ollama == {"label": "Ollama on this machine", "url": f"http://{host}:11434/v1"}
+    assert kinds["anthropic"]["presets"] == []

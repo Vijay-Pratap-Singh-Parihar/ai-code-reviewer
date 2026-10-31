@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from db.ai_endpoints import (
@@ -32,7 +33,7 @@ from db.credentials import CredentialError, encrypt_credentials, key_hint
 from db.organization import User
 from db.provider import AIProvider, ModelRoute, ModelTier, ProviderKind
 from ghapp import is_placeholder_secret
-from revu.providers.llm import ModelEndpoint, complete, extract_json
+from revu.providers.llm import ModelEndpoint, Reasoning, complete, extract_json
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -311,15 +312,33 @@ async def _probe(name: str, run: Any) -> tuple[ProbeResult, float]:
     )
 
 
-async def test_provider(
-    session: AsyncSession, *, actor: User, provider: AIProvider, model: str
-) -> ProviderTestResult:
+TestStep = Literal["reply", "json_mode", "tool_calling"]
+
+
+async def run_provider_test(
+    session: AsyncSession,
+    *,
+    actor: User,
+    provider: AIProvider,
+    model: str,
+    reasoning: Reasoning | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     """Three small calls: a plain reply, JSON mode, and a tool call. The
     capability flags they find decide how reviews use this provider (a model
-    that can't call tools gets diff-only reviews instead of cross-file)."""
+    that can't call tools gets diff-only reviews instead of cross-file).
+
+    Yields progress as it goes, so the UI can show which call is running
+    (a local model can take a minute per call): `{"event": "start", "step"}`
+    before each call, `{"event": "step", "step", "result"}` after it, and
+    finally `{"event": "done", "result"}` with the whole outcome, once it is
+    recorded."""
     try:
         endpoint = await endpoint_for(
-            provider, model, secret=encryption_secret(), allow_private=allow_private_endpoints()
+            provider,
+            model,
+            secret=encryption_secret(),
+            allow_private=allow_private_endpoints(),
+            reasoning=reasoning,
         )
     except (UnsafeEndpointError, CredentialError, ValueError) as exc:
         failed = ProbeResult(ok=False, detail=str(exc))
@@ -328,7 +347,8 @@ async def test_provider(
         )
         _record_test(session, actor, provider, result)
         await session.commit()
-        return result
+        yield {"event": "done", "result": result.model_dump(mode="json")}
+        return
 
     async def reply() -> tuple[bool, str | None, float]:
         r = await _call(endpoint, [{"role": "user", "content": "Reply with the single word: OK"}])
@@ -351,16 +371,30 @@ async def test_provider(
         called = any(c.name == "get_line_count" for c in r.tool_calls)
         return called, None if called else "the model answered without calling the tool", r.cost_usd
 
-    reply_r, c1 = await _probe("reply", reply)
-    json_r, c2 = await _probe("json", json_mode) if reply_r.ok else (_skipped(), 0.0)
-    tools_r, c3 = await _probe("tools", tools) if reply_r.ok else (_skipped(), 0.0)
+    probes: list[tuple[TestStep, Any]] = [
+        ("reply", reply),
+        ("json_mode", json_mode),
+        ("tool_calling", tools),
+    ]
+    results: dict[TestStep, ProbeResult] = {}
+    cost = 0.0
+    for step, run in probes:
+        if step != "reply" and not results["reply"].ok:
+            results[step] = _skipped()
+        else:
+            yield {"event": "start", "step": step}
+            results[step], step_cost = await _probe(step, run)
+            cost += step_cost
+        yield {"event": "step", "step": step, "result": results[step].model_dump(mode="json")}
+
+    reply_r, json_r, tools_r = results["reply"], results["json_mode"], results["tool_calling"]
     result = ProviderTestResult(
         ok=reply_r.ok and json_r.ok,
         model=model,
         reply=reply_r,
         json_mode=json_r,
         tool_calling=tools_r,
-        cost_usd=c1 + c2 + c3,
+        cost_usd=cost,
     )
     if reply_r.ok:
         provider.settings = {
@@ -370,7 +404,24 @@ async def test_provider(
         }
     _record_test(session, actor, provider, result)
     await session.commit()
-    return result
+    yield {"event": "done", "result": result.model_dump(mode="json")}
+
+
+async def test_provider(
+    session: AsyncSession,
+    *,
+    actor: User,
+    provider: AIProvider,
+    model: str,
+    reasoning: Reasoning | None = None,
+) -> ProviderTestResult:
+    """The same test as `run_provider_test`, answered in one piece."""
+    async for event in run_provider_test(
+        session, actor=actor, provider=provider, model=model, reasoning=reasoning
+    ):
+        if event["event"] == "done":
+            return ProviderTestResult.model_validate(event["result"])
+    raise AssertionError("the provider test ended without a result")
 
 
 def _skipped() -> ProbeResult:

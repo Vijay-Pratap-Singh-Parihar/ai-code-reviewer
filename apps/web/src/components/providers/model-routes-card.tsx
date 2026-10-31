@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { CheckCircle2, Loader2 } from "lucide-react";
 import {
   formatApiError,
   setModelRoutes,
@@ -14,19 +15,11 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ModelPicker } from "@/components/providers/model-picker";
+import { MODEL_DEFAULT, THINKING, thinkingLabel, toReasoning } from "@/components/providers/thinking";
 
 const NONE = "none";
-const MODEL_DEFAULT = "default";
-
-const THINKING: { value: Reasoning | typeof MODEL_DEFAULT; label: string }[] = [
-  { value: MODEL_DEFAULT, label: "Model default" },
-  { value: "off", label: "Off (fastest)" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-];
 
 export const TIERS: { tier: ModelTier; label: string; description: string; inUse: boolean }[] = [
   {
@@ -60,8 +53,6 @@ function draftFrom(routes: ModelRoutePublic[]): Draft {
   }
   return draft;
 }
-
-const thinkingLabel = (value: string) => THINKING.find((t) => t.value === value)?.label ?? value;
 
 /** Which provider and model each review step uses. */
 export function ModelRoutesCard({
@@ -115,7 +106,7 @@ export function ModelRoutesCard({
           </p>
         )}
         {TIERS.map(({ tier, label, description, inUse }) => (
-          <div key={tier} className="grid gap-2 sm:grid-cols-[10rem_1fr_1fr_10rem] sm:items-start">
+          <div key={tier} className="grid gap-2 lg:grid-cols-[11rem_minmax(0,1fr)_minmax(0,1fr)_13rem] lg:items-start">
             <div className="flex flex-col">
               <span className="flex items-center gap-2 text-sm font-medium">
                 {label}
@@ -144,14 +135,13 @@ export function ModelRoutesCard({
                 ))}
               </SelectContent>
             </Select>
-            <Input
-              aria-label={`${label} model`}
+            <ModelPicker
+              ariaLabel={`${label} model`}
+              providerId={draft[tier].providerId === NONE ? null : draft[tier].providerId}
               disabled={!canEdit || draft[tier].providerId === NONE}
               value={draft[tier].model}
-              onChange={(event) =>
-                setDraft((d) => ({ ...d, [tier]: { ...d[tier], model: event.target.value } }))
-              }
-              placeholder="model id, e.g. qwen3.5:4b"
+              onValueChange={(model) => setDraft((d) => ({ ...d, [tier]: { ...d[tier], model } }))}
+              placeholder={draft[tier].providerId === NONE ? "Choose a provider first" : "Choose or type a model id"}
             />
             <Select
               value={draft[tier].reasoning ?? MODEL_DEFAULT}
@@ -159,10 +149,7 @@ export function ModelRoutesCard({
               onValueChange={(value) =>
                 setDraft((d) => ({
                   ...d,
-                  [tier]: {
-                    ...d[tier],
-                    reasoning: !value || value === MODEL_DEFAULT ? null : (value as Reasoning),
-                  },
+                  [tier]: { ...d[tier], reasoning: toReasoning(value) },
                 }))
               }
             >
@@ -194,9 +181,15 @@ export function ModelRoutesCard({
         {canEdit ? (
           <div className="flex items-center gap-3">
             <Button disabled={save.isPending} onClick={() => save.mutate()}>
+              {save.isPending && <Loader2 className="animate-spin" />}
               {save.isPending ? "Saving…" : "Save models"}
             </Button>
-            {(saved || save.isSuccess) && <span className="text-sm text-muted-foreground">Saved.</span>}
+            {(saved || save.isSuccess) && (
+              <span className="flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400">
+                <CheckCircle2 className="size-4" />
+                Saved.
+              </span>
+            )}
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">Only owners and admins can change models.</p>

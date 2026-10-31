@@ -13,7 +13,13 @@ from revu.models import FindingCategory, Severity
 async def _signup_and_get_token(client: AsyncClient, email: str) -> str:
     response = await client.post(
         "/auth/signup",
-        json={"org_name": "Acme Inc", "email": email, "password": "correct-horse-battery"},
+        json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "org_name": "Acme Inc",
+            "email": email,
+            "password": "correct-horse-battery",
+        },
     )
     assert response.status_code == 201, response.text
     token: str = response.json()["access_token"]
@@ -76,6 +82,8 @@ async def test_trigger_analysis_needs_a_configured_review_model(
     response = await api_client.post(
         "/auth/signup",
         json={
+            "first_name": "Ada",
+            "last_name": "Lovelace",
             "org_name": "No Model",
             "email": "nomodel@example.com",
             "password": "correct-horse-battery",

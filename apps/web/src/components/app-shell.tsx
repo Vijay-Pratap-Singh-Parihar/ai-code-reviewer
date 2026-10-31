@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
 import { AppSidebar } from "@/components/app-sidebar";
+import { ProfileDialog } from "@/components/profile-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -15,6 +16,8 @@ export function sectionTitle(pathname: string): string {
   if (pathname.startsWith("/repositories")) return "Repositories";
   if (pathname.startsWith("/github")) return "GitHub";
   if (pathname.startsWith("/runs/")) return "Review";
+  if (pathname.startsWith("/providers")) return "AI Providers";
+  if (pathname.startsWith("/audit")) return "Audit log";
   return "Dashboard";
 }
 
@@ -41,7 +44,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
             <div className="flex items-center gap-3">
               <ThemeToggle />
-              {user && <span className="text-sm text-muted-foreground">{user.email}</span>}
+              {user && <ProfileDialog key={user.id} user={user} />}
               <Button variant="outline" size="sm" onClick={handleLogout}>
                 Sign out
               </Button>

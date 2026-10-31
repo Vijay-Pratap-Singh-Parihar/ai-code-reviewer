@@ -43,6 +43,10 @@ class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
     )
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
+    # Shown in the app instead of the email. Required at signup; accounts
+    # created before names existed have none until they add them.
+    first_name: Mapped[str | None] = mapped_column(String(100))
+    last_name: Mapped[str | None] = mapped_column(String(100))
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(
         pg_enum(UserRole), default=UserRole.MEMBER, nullable=False

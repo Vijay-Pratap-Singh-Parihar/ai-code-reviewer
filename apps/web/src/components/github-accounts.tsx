@@ -14,7 +14,7 @@ import { CONNECTION_STATUS_LABEL, formatDate } from "@/lib/lifecycle";
 import { isOrgAdmin, isPlatformAdmin } from "@/lib/permissions";
 import { useAuth } from "@/components/auth-provider";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CreateGitHubApp } from "@/components/create-github-app";
 import { DeleteDataDialog } from "@/components/delete-data-dialog";
@@ -107,14 +107,10 @@ function InstallationRow({
             onDelete={() => deleteInstallationData(installation.id)}
           />
         )}
-        <Button
-          variant="ghost"
-          size="sm"
-          render={<a href={manageUrl(installation)} target="_blank" rel="noreferrer" />}
-        >
+        <a href={manageUrl(installation)} target="_blank" rel="noreferrer" className={buttonVariants({ variant: "ghost", size: "sm" })}>
           Manage on GitHub
           <ExternalLink />
-        </Button>
+        </a>
       </div>
     </li>
   );
@@ -179,10 +175,10 @@ export function GitHubAccounts() {
             it can read. You&apos;ll be brought back here when it&apos;s done.
           </p>
           <div>
-            <Button render={<a href={app.data.install_url ?? "#"} />}>
+            <a href={app.data.install_url ?? "#"} className={buttonVariants()}>
               <Plug />
               Connect GitHub
-            </Button>
+            </a>
           </div>
           {app.data.slug && (
             <p className="text-xs text-muted-foreground">
