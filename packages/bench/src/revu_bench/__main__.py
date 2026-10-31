@@ -1,5 +1,6 @@
 """Command line: `uv run python -m revu_bench <command> ...`
 
+prepare-aacr  download AACR-Bench (pinned), fetch each PR's diff, write instances
 split    make and save the dev/test split (commit the output file)
 config   write a starting systems config
 run      run systems over a split, resumably, within a budget
@@ -10,17 +11,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 
+from revu_bench.adapters import aacr
 from revu_bench.datasets import (
     fingerprint,
     load_instances,
     load_split,
     make_split,
+    save_instances,
     save_split,
     select,
 )
+from revu_bench.providers import ProviderLookupError, resolve_ui_providers
 from revu_bench.report import write_report
 from revu_bench.runner import (
     BudgetExceeded,
@@ -41,6 +46,28 @@ def _split_instances(args: argparse.Namespace):  # type: ignore[no-untyped-def]
             sys.exit(f"the split was made for data {recorded}, but these instances are {current}")
         instances = select(instances, split, args.which)
     return instances
+
+
+def cmd_prepare_aacr(args: argparse.Namespace) -> int:
+    data_dir = Path(args.data_dir)
+    raw = aacr.download_release(data_dir / "positive_samples.json")
+    records = json.loads(raw.read_text(encoding="utf-8"))
+    fetcher = aacr.GitHubFetcher(data_dir / "cache", token=aacr.github_token())
+    failed: list[str] = []
+
+    def report_failure(ref: aacr.PullRequestRef, exc: Exception) -> None:
+        failed.append(ref.instance_id)
+        print(f"skipped {ref.instance_id} ({ref.repo}#{ref.number}): {exc}", file=sys.stderr)
+
+    instances = aacr.convert(records, fetcher, on_error=report_failure)
+    out = Path(args.out)
+    save_instances(out, instances)
+    comments = sum(len(i.ground_truth) for i in instances)
+    print(f"{len(instances)} instances, {comments} reference comments -> {out}")
+    print(f"data fingerprint {fingerprint(instances)}")
+    if failed:
+        print(f"{len(failed)} pull requests couldn't be fetched: {', '.join(failed)}")
+    return 0
 
 
 def cmd_split(args: argparse.Namespace) -> int:
@@ -71,6 +98,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             f"{record.config} #{record.repeat} {record.instance_id}: "
             f"{len(record.findings)} findings, ${record.cost_usd:.4f}, {status}"
         )
+
+    try:
+        endpoints = asyncio.run(resolve_ui_providers(systems))
+    except ProviderLookupError as exc:
+        sys.exit(str(exc))
+    for system in systems:
+        if system.name in endpoints:
+            system.use_endpoint(endpoints[system.name])
 
     try:
         done = asyncio.run(
@@ -111,6 +146,11 @@ def cmd_report(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m revu_bench")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("prepare-aacr", help="download and convert AACR-Bench")
+    p.add_argument("--data-dir", default="data/aacr", help="raw release and fetched-PR cache")
+    p.add_argument("--out", default="data/aacr/instances.jsonl")
+    p.set_defaults(func=cmd_prepare_aacr)
 
     p = sub.add_parser("split", help="make the dev/test split")
     p.add_argument("--instances", required=True)

@@ -1,0 +1,5 @@
+# Downloaded releases and fetched pull requests: third-party content from many
+# repositories, reproducible exactly with `python -m revu_bench prepare-aacr`.
+data/
+# Run outputs.
+results/

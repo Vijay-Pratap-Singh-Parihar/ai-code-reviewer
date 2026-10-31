@@ -8,10 +8,11 @@
 - **Same pipeline as production.** Systems call revu's engine with a
   `ModelEndpoint`, exactly as the worker does.
 
-Model keys for benchmark runs are read from an environment variable named
-in the config (`api_key_env`), never written into config or result files.
-The product itself only takes keys from the AI Providers screen; this is an
-offline research tool run by the person paying for the calls.
+A system's model is either a provider configured on revu's AI Providers
+screen (`org` + `provider`, resolved by `revu_bench.providers`, so the key
+stays where it was pasted) or, for setups without revu's database, a
+LiteLLM model string with its key in an environment variable named in the
+config (`api_key_env`). Keys are never written into config or result files.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from revu.agents.diff_only import review_diff
 from revu.models import Finding, RunResult
 from revu.providers.llm import ModelEndpoint, Reasoning
@@ -42,7 +43,13 @@ class SystemConfig(BaseModel):
 
     name: str
     agent: Agent = "diff_only"
-    model: str  # LiteLLM model string, e.g. "openai/qwen3.5:4b"
+    # With `provider`: the model id as typed in the UI ("qwen3.5:4b").
+    # Without: a LiteLLM model string ("openai/qwen3.5:4b").
+    model: str
+    # A provider configured on the AI Providers screen, by organisation and
+    # provider name; its key and endpoint come from revu's database.
+    org: str | None = None
+    provider: str | None = None
     api_base: str | None = None
     api_key_env: str | None = None  # name of the env var holding the key
     # Thinking on/off is part of what is being compared: list the same
@@ -50,8 +57,28 @@ class SystemConfig(BaseModel):
     reasoning: Reasoning | None = None
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
+    _resolved: ModelEndpoint | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> SystemConfig:
+        if (self.org is None) != (self.provider is None):
+            raise ValueError(f"{self.name}: give both `org` and `provider`, or neither")
+        if self.provider and (self.api_base or self.api_key_env):
+            raise ValueError(
+                f"{self.name}: a UI provider brings its own endpoint and key; "
+                "drop `api_base` and `api_key_env`"
+            )
+        return self
+
+    def use_endpoint(self, endpoint: ModelEndpoint) -> None:
+        """The endpoint resolved from the UI provider this system names."""
+        self._resolved = endpoint
 
     def endpoint(self) -> ModelEndpoint:
+        if self.provider:
+            if self._resolved is None:
+                raise RuntimeError(f"{self.name}: its UI provider hasn't been resolved")
+            return self._resolved
         key = os.environ.get(self.api_key_env, "") if self.api_key_env else NO_KEY
         if self.api_key_env and not key:
             raise RuntimeError(f"{self.name}: environment variable {self.api_key_env} is not set")
@@ -133,6 +160,8 @@ class BudgetExceeded(RuntimeError):
 def is_hosted(system: SystemConfig) -> bool:
     """Calls a paid hosted API (no local `api_base`). Local servers such as
     Ollama are reached through an `api_base` on this machine or network."""
+    if system.provider:
+        return system.endpoint().api_base is None
     return system.api_base is None
 
 
@@ -227,8 +256,10 @@ def dump_config_template(path: Path) -> None:
             SystemConfig(
                 name="B0-groq-gpt-oss-120b",
                 agent="diff_only",
-                model="groq/openai/gpt-oss-120b",
-                api_key_env="GROQ_API_KEY",
+                # The Groq provider as configured on the AI Providers screen.
+                org="Your organization",
+                provider="Groq",
+                model="openai/gpt-oss-120b",
             ),
         ]
     )
