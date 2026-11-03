@@ -2,7 +2,7 @@ import json
 
 import pytest
 from revu.agents import diff_only
-from revu.providers.llm import CompletionResult
+from revu.providers.llm import CompletionResult, ModelEndpoint
 
 
 def _result(
@@ -62,6 +62,7 @@ async def test_review_diff_retries_once_on_malformed_json_then_succeeds(
         messages: list[dict[str, str]],
         response_format: object = None,
         temperature: float = 0.0,
+        max_tokens: int | None = None,
     ) -> CompletionResult:
         calls.append(messages)
         if len(calls) == 1:
@@ -231,3 +232,49 @@ async def test_a_failed_part_loses_only_its_own_findings(monkeypatch: pytest.Mon
     assert result.stopped_reason == "parts_failed (1 of 2)"
     with pytest.raises(TimeoutError):  # nothing to show at all: the run fails
         await diff_only.review_diff(pr_title="t", pr_body="b", diff=_file("b.py"), model="f")
+
+
+async def test_a_cut_off_answer_keeps_its_complete_findings_once_each(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What a small model stuck in a loop produces: one finding repeated
+    with shifting lines until the token limit cuts it mid-object."""
+    first = json.loads(_finding_for("a.py"))["findings"][0]
+    looping = [first] + [{**first, "file_path": "b.py", "line_start": n} for n in (3, 5, 7)]
+    content = '{"findings": [' + ", ".join(json.dumps(f) for f in looping) + ', {"file_path": "b.'
+
+    async def fake_complete(**kwargs: object) -> CompletionResult:
+        return CompletionResult(
+            content=content,
+            tokens_in=1,
+            tokens_out=2048,
+            cost_usd=0.0,
+            latency_ms=1,
+            finish_reason="length",
+        )
+
+    monkeypatch.setattr(diff_only, "complete", fake_complete)
+
+    result = await diff_only.review_diff(pr_title="t", pr_body="b", diff=_file("a.py"), model="f")
+
+    assert [(f.file_path, f.line_start) for f in result.findings] == [("a.py", 1), ("b.py", 3)]
+    assert result.stopped_reason == "output_token_limit"
+
+
+async def test_a_model_told_not_to_think_gets_a_tight_answer_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limits: list[object] = []
+
+    async def fake_complete(**kwargs: object) -> CompletionResult:
+        limits.append(kwargs.get("max_tokens"))
+        return _result('{"findings": []}')
+
+    monkeypatch.setattr(diff_only, "complete", fake_complete)
+    off = ModelEndpoint("openai/qwen3.5:4b", "k", "http://x/v1", reasoning="off")
+    thinking = ModelEndpoint("openai/qwen3.5:4b", "k", "http://x/v1", reasoning="high")
+
+    for model in (off, thinking):
+        await diff_only.review_diff(pr_title="t", pr_body="b", diff=_file("a.py"), model=model)
+
+    assert limits == [diff_only.ANSWER_TOKENS, None]  # thinking keeps the default's room

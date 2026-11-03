@@ -16,7 +16,13 @@ from pydantic import BaseModel, Field, ValidationError
 from revu.context.chunks import DEFAULT_MAX_CHARS, split_for_review
 from revu.context.noise import drop_noise
 from revu.models import Finding, FindingCategory, RunResult, Severity
-from revu.providers.llm import CompletionResult, ModelEndpoint, complete, extract_json
+from revu.providers.llm import (
+    CompletionResult,
+    ModelEndpoint,
+    complete,
+    extract_json,
+    strip_thinking,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,9 @@ Silence is a valid, good answer.
 between 0 and 1}]}
 No prose outside the JSON object.
 """
+
+# About fifteen findings: more than one part of a diff ever needs.
+ANSWER_TOKENS = 2_048
 
 _RETRY_PROMPT = (
     "That was not valid JSON matching the required schema. "
@@ -90,6 +99,34 @@ def _parse(content: str) -> _DiffOnlyOutput | None:
         return None
 
 
+def _salvage(content: str) -> _DiffOnlyOutput:
+    """The complete findings in an answer cut off part-way, each message
+    once: a small model that runs out of room has usually been repeating
+    one finding with shifting line numbers."""
+    text = strip_thinking(content)
+    start = text.find("[")
+    decoder = json.JSONDecoder()
+    findings: list[_FindingPayload] = []
+    seen: set[tuple[str, str]] = set()
+    i = start + 1 if start != -1 else len(text)
+    while i < len(text):
+        while i < len(text) and text[i] in " \t\r\n,":
+            i += 1
+        try:
+            item, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break  # the cut-off one
+        try:
+            finding = _FindingPayload.model_validate(item)
+        except ValidationError:
+            continue
+        key = (finding.file_path, finding.message)
+        if key not in seen:
+            seen.add(key)
+            findings.append(finding)
+    return _DiffOnlyOutput(findings=findings)
+
+
 def _merge(first: CompletionResult, second: CompletionResult) -> CompletionResult:
     return CompletionResult(
         content=second.content,
@@ -118,9 +155,7 @@ async def review_diff(
 
     async def one(index: int, part: str) -> tuple[list[Finding], CompletionResult, str | None]:
         async with semaphore:
-            return await _review_part(
-                pr_title, pr_body, part, model, part=(index, len(parts))
-            )
+            return await _review_part(pr_title, pr_body, part, model, part=(index, len(parts)))
 
     results = await asyncio.gather(
         *(one(i, p) for i, p in enumerate(parts, start=1)), return_exceptions=True
@@ -152,6 +187,15 @@ async def review_diff(
     )
 
 
+def _answer_limit(model: str | ModelEndpoint) -> int | None:
+    """A part's findings fit well inside `ANSWER_TOKENS`; a model told not
+    to think gets just that, so one stuck repeating itself stops in minutes
+    even on a laptop CPU. A thinking model keeps the default's room."""
+    if isinstance(model, ModelEndpoint) and model.reasoning == "off":
+        return ANSWER_TOKENS
+    return None
+
+
 async def _review_part(
     pr_title: str,
     pr_body: str,
@@ -164,14 +208,23 @@ async def _review_part(
     findings, usage, and why it produced none if it couldn't answer."""
     messages = _build_messages(pr_title, pr_body, diff, part)
 
-    result = await complete(model=model, messages=messages, response_format={"type": "json_object"})
+    result = await complete(
+        model=model,
+        messages=messages,
+        response_format={"type": "json_object"},
+        max_tokens=_answer_limit(model),
+    )
     parsed = _parse(result.content)
 
     if parsed is None and result.truncated:
-        # Asking a model that ran out of room to repeat itself in full
-        # only runs out of room again.
-        logger.warning("diff_only: answer cut off at the output token limit")
-        return [], result, "output_token_limit"
+        # Asking a model that ran out of room to repeat itself in full only
+        # runs out of room again; keep what it finished saying instead.
+        salvaged = _salvage(result.content)
+        logger.warning(
+            "diff_only: answer cut off at the output token limit; kept %d findings",
+            len(salvaged.findings),
+        )
+        return _to_findings(salvaged), result, "output_token_limit"
 
     if parsed is None:
         logger.warning("diff_only: malformed JSON on first attempt; retrying with correction")
@@ -192,7 +245,11 @@ async def _review_part(
         )
         return [], result, "final_answer_malformed_after_retry"
 
-    findings = [
+    return _to_findings(parsed), result, None
+
+
+def _to_findings(output: _DiffOnlyOutput) -> list[Finding]:
+    return [
         Finding(
             file_path=f.file_path,
             line_start=f.line_start,
@@ -204,6 +261,5 @@ async def _review_part(
             confidence=f.confidence,
             agent_name="diff_only",
         )
-        for f in parsed.findings
+        for f in output.findings
     ]
-    return findings, result, None

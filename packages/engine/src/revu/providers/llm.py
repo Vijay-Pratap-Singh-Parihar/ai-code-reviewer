@@ -265,12 +265,18 @@ _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
 
 
+def strip_thinking(content: str) -> str:
+    """`content` without the `<think>...</think>` block open models put
+    their reasoning in."""
+    return _THINK_BLOCK.sub("", content)
+
+
 def extract_json(content: str) -> Any:
     """Parse a model's JSON answer, tolerating what open models commonly wrap
     it in: a `<think>...</think>` reasoning block, a ```json code fence, or
     a sentence before/after the object. Raises `json.JSONDecodeError` when
     there is no JSON object to be found."""
-    text = _THINK_BLOCK.sub("", content).strip()
+    text = strip_thinking(content).strip()
     fenced = _FENCE.match(text)
     if fenced:
         text = fenced.group(1)
