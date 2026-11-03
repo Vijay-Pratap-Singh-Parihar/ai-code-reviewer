@@ -102,3 +102,7 @@ class RunResult(BaseModel):
     cost_usd: float = 0.0
     latency_ms: int = 0
     stopped_reason: str | None = None
+    # Lockfiles, generated and vendored files left out of the review
+    # (`revu.context.noise`), and how many parts a large diff was reviewed in.
+    skipped_files: list[str] = Field(default_factory=list)
+    parts: int = 1

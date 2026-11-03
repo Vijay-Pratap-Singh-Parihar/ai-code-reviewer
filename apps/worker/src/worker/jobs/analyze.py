@@ -12,8 +12,8 @@ from db.tenancy import bind_org
 from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
 from revu.index.store import load_graph
-from revu.models import Finding
-from revu.providers.llm import ModelEndpoint
+from revu.models import Finding, RunResult
+from revu.providers.llm import ModelEndpoint, describe_error
 from revu.verify import verify_findings
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,11 +58,27 @@ async def _run_cross_file(
 
     verification = verify_findings(result.findings, repo_root=repo_root)
     run.config_snapshot = {**run.config_snapshot, "verification": asdict(verification.report)}
+    _record_usage(run, result)
+    return verification.findings
+
+
+def _record_usage(run: AnalysisRun, result: RunResult) -> None:
+    """Usage, plus what the run should tell its reader about how the review
+    went: files left out, parts, and why it stopped short if it did."""
     run.tokens_in = result.tokens_in
     run.tokens_out = result.tokens_out
     run.cost_usd = result.cost_usd
     run.latency_ms = result.latency_ms
-    return verification.findings
+    notes: dict[str, Any] = {}
+    if result.skipped_files:
+        notes["skipped_files"] = result.skipped_files
+    if result.parts > 1:
+        notes["parts"] = result.parts
+    if result.stopped_reason:
+        notes["stopped_reason"] = result.stopped_reason
+    if notes:
+        run.config_snapshot = {**run.config_snapshot, **notes}
+
 
 
 async def execute_review(
@@ -103,10 +119,7 @@ async def execute_review(
             result = await review_diff(
                 pr_title=pr_title, pr_body=pr_body, diff=diff, model=model
             )
-            run.tokens_in = result.tokens_in
-            run.tokens_out = result.tokens_out
-            run.cost_usd = result.cost_usd
-            run.latency_ms = result.latency_ms
+            _record_usage(run, result)
             findings = result.findings
     except Exception as exc:
         logger.exception("review of run %s failed", run.id)
@@ -142,7 +155,7 @@ async def mark_run_running(session: AsyncSession, run: AnalysisRun) -> None:
 
 async def mark_run_failed(session: AsyncSession, run: AnalysisRun, exc: BaseException) -> None:
     run.status = AnalysisRunStatus.FAILED
-    run.error = str(exc)
+    run.error = describe_error(exc)
     run.finished_at = datetime.now(UTC)
     await session.commit()
 

@@ -75,3 +75,6 @@ class AnalysisRunPublic(BaseModel):
     github_review_url: str | None = None
     posted_at: datetime | None = None
     post_error: str | None = None
+    # How the review went, for its reader: files left out, a large diff
+    # reviewed in parts, a model that stopped short.
+    notices: list[str] = Field(default_factory=list)

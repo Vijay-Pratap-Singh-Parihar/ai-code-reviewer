@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+import litellm
 import pytest
 import rustworkx as rx
 from db.branch_index import BranchIndex, BranchIndexStatus
@@ -206,6 +207,45 @@ async def test_analyze_pr_marks_failed_on_exception(
     assert run.status == AnalysisRunStatus.FAILED
     assert run.error == "provider unavailable"
     assert run.finished_at is not None
+
+
+async def test_a_model_timeout_is_recorded_in_words_not_as_a_stack_of_library_text(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+
+    async def slow_review_diff(**kwargs: object) -> RunResult:
+        raise litellm.Timeout(message="timeout value=600.0", model="m", llm_provider="openai")
+
+    monkeypatch.setattr(analyze, "review_diff", slow_review_diff)
+
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert run.error is not None and run.error.startswith("The model didn't answer in time.")
+
+
+async def test_how_the_review_went_is_kept_on_the_run(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        return RunResult(
+            skipped_files=["yarn.lock"], parts=2, stopped_reason="parts_failed (1 of 2)"
+        )
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.SUCCEEDED
+    assert run.config_snapshot["skipped_files"] == ["yarn.lock"]
+    assert run.config_snapshot["parts"] == 2
+    assert run.config_snapshot["stopped_reason"] == "parts_failed (1 of 2)"
+    assert run.config_snapshot["agent"] == "diff_only"  # added to, not replaced
 
 
 async def test_analyze_pr_uses_model_from_config_snapshot(

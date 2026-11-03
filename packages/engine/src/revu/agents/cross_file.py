@@ -30,6 +30,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from revu.agents.tools import TOOL_SCHEMAS, ToolContext, call_tool
 from revu.context import RetrievalConfig, build_context_bundle
+from revu.context.noise import drop_noise
 from revu.models import ContextBundle, EvidenceItem, Finding, FindingCategory, RunResult, Severity
 from revu.providers.llm import ModelEndpoint, complete, extract_json
 
@@ -243,6 +244,10 @@ async def review_cross_file(
     graph-only) - every token counted comes from the agent's own
     tool-calling loop and, if needed, its one JSON-repair retry.
     """
+    filtered = drop_noise(diff)
+    if not filtered.diff.strip():
+        return RunResult(skipped_files=filtered.skipped, parts=0)
+    diff = filtered.diff
     context_bundle = build_context_bundle(diff, graph, repo_root, config=context_config)
     messages = _build_initial_messages(pr_title, pr_body, diff, context_bundle)
 
@@ -274,6 +279,7 @@ async def review_cross_file(
             tokens_out=tokens_out,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
+            skipped_files=filtered.skipped,
             stopped_reason=f"max_tool_rounds_reached ({max_rounds})",
         )
 
@@ -299,6 +305,7 @@ async def review_cross_file(
             tokens_out=tokens_out,
             cost_usd=cost_usd,
             latency_ms=latency_ms,
+            skipped_files=filtered.skipped,
             stopped_reason="final_answer_malformed_after_retry",
         )
 
@@ -324,4 +331,5 @@ async def review_cross_file(
         tokens_out=tokens_out,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
+        skipped_files=filtered.skipped,
     )

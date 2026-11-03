@@ -204,6 +204,8 @@ export type AnalysisRunPublic = {
   github_review_url?: string | null;
   posted_at?: string | null;
   post_error?: string | null;
+  /** How the review went: files left out, parts, a model that stopped short. */
+  notices?: string[];
 };
 
 /** Queue posting a finished PR review to GitHub; a no-op once it is posted. */
