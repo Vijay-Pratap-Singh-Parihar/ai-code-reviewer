@@ -206,7 +206,14 @@ export type AnalysisRunPublic = {
   post_error?: string | null;
   /** How the review went: files left out, parts, a model that stopped short. */
   notices?: string[];
+  /** The failed run this one retries, when it is a retry. */
+  retry_of?: string | null;
 };
+
+/** Run a failed review again as a new run; answers with the new run. */
+export function retryAnalysis(runId: string): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}/retry`, { method: "POST" });
+}
 
 /** Queue posting a finished PR review to GitHub; a no-op once it is posted. */
 export function postReviewToGitHub(runId: string): Promise<AnalysisRunPublic> {

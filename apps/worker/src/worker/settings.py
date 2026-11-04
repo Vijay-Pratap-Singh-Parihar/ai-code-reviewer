@@ -7,7 +7,7 @@ from arq.cron import cron
 from arq.worker import func
 from db.tenancy import rls_bypass_reason
 from ghapp import GitHubAppConfig, load_private_key
-from observability import configure_logging, default_format
+from observability import configure_logging, default_format, init_error_reporting, metrics
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     log_format: Literal["json", "text"] | None = None
+    # Error reporting (Sentry or GlitchTip); off when empty.
+    sentry_dsn: str = ""
+    # Port for the worker's Prometheus exporter; 0 = no exporter.
+    metrics_port: int = 0
     # Same meaning as the API's: may AI provider endpoints be on private or
     # loopback networks? Unset = yes outside production, no in production.
     revu_allow_private_provider_urls: bool | None = None
@@ -94,6 +98,23 @@ def _configure_logging() -> None:
 
 _configure_logging()
 
+
+def _init_error_reporting() -> None:
+    if not settings.sentry_dsn:
+        return
+    from sentry_sdk.integrations.arq import ArqIntegration
+
+    init_error_reporting(
+        dsn=settings.sentry_dsn,
+        service="worker",
+        environment=settings.environment,
+        integrations=[ArqIntegration()],
+    )
+
+
+# Before WorkerSettings is defined: the arq integration patches arq's Worker.
+_init_error_reporting()
+
 # A branch index of a large repository clones and parses it all.
 INDEX_JOB_TIMEOUT_S = 30 * 60
 
@@ -129,6 +150,9 @@ class WorkerSettings:
         # The `arq` command applies its own logging config after importing
         # this module; put ours back so each line is written once, in format.
         _configure_logging()
+        if settings.metrics_port:
+            metrics.serve(settings.metrics_port)
+            logger.info("metrics exporter listening on port %d", settings.metrics_port)
         engine = create_async_engine(settings.database_url, pool_pre_ping=True)
         problem = await rls_bypass_reason(engine)
         if problem and settings.environment == "production":

@@ -5,18 +5,40 @@ from contextlib import asynccontextmanager
 from db.tenancy import rls_bypass_reason
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from observability import REQUEST_ID_HEADER, configure_logging, default_format
+from observability import (
+    REQUEST_ID_HEADER,
+    configure_logging,
+    default_format,
+    init_error_reporting,
+)
 
 from api.core.config import get_settings
 from api.core.request_context import RequestContextMiddleware
 from api.db.session import engine
-from api.routers import analysis, audit, auth, branch_index, github, health, providers, repos
+from api.routers import (
+    analysis,
+    audit,
+    auth,
+    branch_index,
+    github,
+    health,
+    metrics,
+    providers,
+    repos,
+)
 
 settings = get_settings()
 configure_logging(
     service="api",
     level=settings.log_level,
     fmt=settings.log_format or default_format(settings.environment),
+)
+# Sentry's FastAPI integration switches itself on when the SDK starts.
+init_error_reporting(
+    dsn=settings.sentry_dsn,
+    service="api",
+    environment=settings.environment,
+    traces_sample_rate=settings.sentry_traces_sample_rate,
 )
 logger = logging.getLogger(__name__)
 
@@ -45,6 +67,7 @@ app.add_middleware(
 app.add_middleware(RequestContextMiddleware)
 
 app.include_router(health.router)
+app.include_router(metrics.router)
 app.include_router(auth.router)
 app.include_router(analysis.router)
 app.include_router(branch_index.router)

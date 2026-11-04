@@ -4,7 +4,7 @@
 queued it (`api.core.queue.enqueue` passes it as `request_id`), the job's
 name, arq's job id and attempt, and the run, organisation or repository it
 is about, taken from the job's own arguments. It also logs how each attempt
-ended and how long it took.
+ended and how long it took, in the log and in the job metrics.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from arq.typing import WorkerCoroutine
-from observability import bound
+from observability import bound, metrics
 
 logger = logging.getLogger("worker.jobs")
 
@@ -56,11 +56,14 @@ def traced(job: Job) -> WorkerCoroutine:
                 outcome = type(exc).__name__
                 raise
             finally:
+                elapsed = time.perf_counter() - start
+                metrics.JOBS.labels(job.__name__, outcome).inc()
+                metrics.JOB_DURATION.labels(job.__name__).observe(elapsed)
                 logger.info(
                     "job %s %s",
                     job.__name__,
                     outcome,
-                    extra={"duration_ms": round((time.perf_counter() - start) * 1000)},
+                    extra={"duration_ms": round(elapsed * 1000)},
                 )
 
     return cast(WorkerCoroutine, run)

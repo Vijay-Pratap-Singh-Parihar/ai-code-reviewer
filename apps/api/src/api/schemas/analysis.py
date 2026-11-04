@@ -78,3 +78,5 @@ class AnalysisRunPublic(BaseModel):
     # How the review went, for its reader: files left out, a large diff
     # reviewed in parts, a model that stopped short.
     notices: list[str] = Field(default_factory=list)
+    # The failed run this one retries, when it is a retry.
+    retry_of: uuid.UUID | None = None

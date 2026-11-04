@@ -355,8 +355,10 @@ async def queue_github_review(
     branch_index_id: uuid.UUID | None = None,
     actor_id: uuid.UUID | None = None,
     repo_full_name: str = "",
+    retry_of: uuid.UUID | None = None,
 ) -> AnalysisRun:
     model = await route_snapshot(session, pr.org_id, ModelTier.REVIEW)
+    extra = {"retry_of": str(retry_of)} if retry_of else {}
     run = AnalysisRun(
         pr_id=pr.id,
         org_id=pr.org_id,
@@ -367,6 +369,7 @@ async def queue_github_review(
             "head_sha": pr.head_sha,
             "trigger": trigger,
             "source": "github",
+            **extra,
         },
         status=AnalysisRunStatus.QUEUED,
         # Python-side, like BranchIndex.created_at: Postgres now() is
@@ -381,7 +384,7 @@ async def queue_github_review(
         actor_id=actor_id,
         action=AuditAction.REVIEW_REQUESTED,
         target=f"pull_request:{repo_full_name}#{pr.number}",
-        metadata={"run_id": str(run.id), "agent": agent, "trigger": trigger},
+        metadata={"run_id": str(run.id), "agent": agent, "trigger": trigger, **extra},
     )
     await session.commit()
     await enqueue(redis, "review_github_pr", str(run.id), str(run.org_id))

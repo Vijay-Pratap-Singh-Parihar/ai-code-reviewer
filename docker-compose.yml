@@ -66,6 +66,10 @@ services:
       # survive image rebuilds (BranchIndex.graph_ref stores these paths).
       REVU_INDEX_STORAGE_DIR: /data/index
       REVU_REPO_CACHE_DIR: /data/repos
+      # Prometheus exporter (reviews, durations, tokens, cost).
+      METRICS_PORT: "9100"
+    ports:
+      - "127.0.0.1:${HOST_WORKER_METRICS_PORT:-9100}:9100"
     volumes:
       - revu_data:/data
       - ./.secrets:/run/revu-secrets:ro

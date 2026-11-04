@@ -19,6 +19,7 @@ from db.pull_request import (
 )
 from db.repository import Repository
 from db.tenancy import bind_org
+from observability import metrics
 from revu.models import EvidenceItem, Finding, FindingCategory, RunResult, Severity
 from revu.providers.llm import ModelEndpoint
 from revu.verify import VerificationReport, VerificationResult
@@ -701,3 +702,63 @@ async def test_runs_a_crashed_worker_left_behind_are_failed(
     assert abandoned.error == analyze.INTERRUPTED
     assert working.status == AnalysisRunStatus.RUNNING
     assert waiting.status == AnalysisRunStatus.QUEUED
+
+
+def _sample(name: str, **labels: str) -> float:
+    value = metrics.REGISTRY.get_sample_value(name, labels)
+    return value or 0.0
+
+
+async def test_review_outcomes_tokens_and_cost_reach_the_metrics(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+    finding = Finding(
+        file_path="a.py", line_start=1, line_end=1, category=FindingCategory.CORRECTNESS,
+        severity=Severity.CRITICAL, message="bug", evidence=[], confidence=0.9,
+        agent_name="diff_only",
+    )
+
+    async def review(**kwargs: object) -> RunResult:
+        return RunResult(
+            findings=[finding], tokens_in=100, tokens_out=40, cost_usd=0.5, latency_ms=2000
+        )
+
+    monkeypatch.setattr(analyze, "review_diff", review)
+    before = {
+        "ok": _sample("revu_reviews_total", agent="diff_only", outcome="succeeded"),
+        "in": _sample("revu_review_tokens_total", direction="in"),
+        "cost": _sample("revu_review_cost_usd_total"),
+        "critical": _sample("revu_review_findings_total", severity="critical"),
+    }
+
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    assert _sample("revu_reviews_total", agent="diff_only", outcome="succeeded") == before["ok"] + 1
+    assert _sample("revu_review_tokens_total", direction="in") == before["in"] + 100
+    assert _sample("revu_review_cost_usd_total") == pytest.approx(before["cost"] + 0.5)
+    assert (
+        _sample("revu_review_findings_total", severity="critical") == before["critical"] + 1
+    )
+
+
+async def test_a_failed_and_a_retried_review_are_counted_apart(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def busy_provider(**kwargs: object) -> RunResult:
+        raise _rate_limited()
+
+    monkeypatch.setattr(analyze, "review_diff", busy_provider)
+    retried = _sample("revu_reviews_total", agent="diff_only", outcome="retried")
+    failed = _sample("revu_reviews_total", agent="diff_only", outcome="failed")
+
+    first, _ = await _make_run(worker_db_session)
+    with pytest.raises(Retry):
+        await analyze.analyze_pr({**worker_ctx, "job_try": 1}, str(first.id), str(first.org_id))
+    other = await _make_repo(worker_db_session, name="acme/other")
+    last, _ = await _make_run(worker_db_session, repo=other)
+    ctx = {**worker_ctx, "job_try": analyze.REVIEW_MAX_TRIES}
+    await analyze.analyze_pr(ctx, str(last.id), str(last.org_id))
+
+    assert _sample("revu_reviews_total", agent="diff_only", outcome="retried") == retried + 1
+    assert _sample("revu_reviews_total", agent="diff_only", outcome="failed") == failed + 1

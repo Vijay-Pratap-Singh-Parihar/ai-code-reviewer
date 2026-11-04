@@ -12,6 +12,7 @@ from db.organization import Organization
 from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullRequest
 from db.repository import Repository
 from db.tenancy import bind_org
+from observability import metrics
 from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
 from revu.index.store import load_graph
@@ -152,6 +153,7 @@ async def execute_review(
             findings = result.findings
     except asyncio.CancelledError:
         logger.warning("review of run %s interrupted", run.id)
+        metrics.REVIEWS.labels(agent, "interrupted").inc()
         await mark_run_failed(session, run, RuntimeError(INTERRUPTED))
         raise
     except Exception as exc:
@@ -160,9 +162,11 @@ async def execute_review(
             logger.warning(
                 "review of run %s hit a transient error, retrying in %ds: %s", run.id, wait_s, exc
             )
+            metrics.REVIEWS.labels(agent, "retried").inc()
             await mark_run_queued_for_retry(session, run, retries=attempt)
             raise Retry(defer=wait_s) from exc
         logger.exception("review of run %s failed", run.id)
+        metrics.REVIEWS.labels(agent, "failed").inc()
         await mark_run_failed(session, run, exc)
         return
 
@@ -185,6 +189,18 @@ async def execute_review(
     run.status = AnalysisRunStatus.SUCCEEDED
     run.finished_at = datetime.now(UTC)
     await session.commit()
+    _count_success(agent, run, findings)
+
+
+def _count_success(agent: str, run: AnalysisRun, findings: list[Finding]) -> None:
+    metrics.REVIEWS.labels(agent, "succeeded").inc()
+    if run.latency_ms is not None:
+        metrics.REVIEW_DURATION.labels(agent).observe(run.latency_ms / 1000)
+    metrics.REVIEW_TOKENS.labels("in").inc(run.tokens_in or 0)
+    metrics.REVIEW_TOKENS.labels("out").inc(run.tokens_out or 0)
+    metrics.REVIEW_COST.inc(float(run.cost_usd or 0))
+    for finding in findings:
+        metrics.REVIEW_FINDINGS.labels(str(finding.severity)).inc()
 
 
 async def mark_run_running(session: AsyncSession, run: AnalysisRun) -> None:
@@ -274,6 +290,8 @@ async def fail_stuck_runs(ctx: dict[str, Any]) -> int:
                 run.status = AnalysisRunStatus.FAILED
                 run.error = INTERRUPTED
                 run.finished_at = now
+                agent = str(run.config_snapshot.get("agent", "diff_only"))
+                metrics.REVIEWS.labels(agent, "interrupted").inc()
                 marked += 1
             await session.commit()
     if marked:

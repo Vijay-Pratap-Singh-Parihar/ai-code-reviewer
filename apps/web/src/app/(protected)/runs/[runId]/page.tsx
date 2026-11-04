@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Info } from "lucide-react";
 import { getAnalysisRun } from "@/lib/api-client";
 import { PostToGitHub } from "@/components/post-to-github";
+import { RetryReview } from "@/components/retry-review";
 import { useRunMetadata } from "@/lib/run-metadata-store";
 import { STATUS_BADGE } from "@/lib/badges";
 import { Badge } from "@/components/ui/badge";
@@ -89,6 +90,16 @@ export default function RunPage() {
             ))}
           </ul>
         )}
+        {data?.retry_of && (
+          <p className="text-xs text-muted-foreground">
+            A retry of an{" "}
+            <Link href={`/runs/${data.retry_of}`} className="underline underline-offset-4">
+              earlier review that failed
+            </Link>
+            .
+          </p>
+        )}
+        {data && <RetryReview run={data} />}
         {data && <PostToGitHub run={data} />}
       </div>
 
