@@ -69,7 +69,8 @@ docker compose exec api alembic upgrade head
 
 # 5. Check that everything is up
 docker compose ps                    # six services, all "Up"
-curl http://localhost:8000/health    # {"status":"ok"}
+curl http://localhost:8000/health/ready
+# {"status":"ok","checks":{"database":"ok","redis":"ok"},"worker":"ok"}
 ```
 
 Then open **http://localhost:3000**.

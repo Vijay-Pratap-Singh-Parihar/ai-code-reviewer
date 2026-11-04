@@ -1,10 +1,12 @@
+import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import litellm
 import pytest
 import rustworkx as rx
+from arq import Retry
 from db.branch_index import BranchIndex, BranchIndexStatus
 from db.organization import Organization
 from db.provider import AIProvider
@@ -596,3 +598,106 @@ async def test_cross_file_review_without_branch_index_id_fails(
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.FAILED
     assert "branch_index_id" in (run.error or "")
+
+
+def _rate_limited() -> Exception:
+    return litellm.RateLimitError(message="429", model="m", llm_provider="groq")
+
+
+async def test_a_rate_limited_review_goes_back_in_the_queue_to_retry(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+
+    async def busy_provider(**kwargs: object) -> RunResult:
+        raise _rate_limited()
+
+    monkeypatch.setattr(analyze, "review_diff", busy_provider)
+
+    with pytest.raises(Retry) as retry:
+        await analyze.analyze_pr({**worker_ctx, "job_try": 1}, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.QUEUED
+    assert run.config_snapshot["retries"] == 1
+    assert retry.value.defer_score == analyze.RETRY_BASE_S * 1000  # arq keeps milliseconds
+
+
+async def test_the_last_attempt_fails_the_run_instead_of_retrying(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+
+    async def busy_provider(**kwargs: object) -> RunResult:
+        raise _rate_limited()
+
+    monkeypatch.setattr(analyze, "review_diff", busy_provider)
+
+    ctx = {**worker_ctx, "job_try": analyze.REVIEW_MAX_TRIES}
+    await analyze.analyze_pr(ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "rate limiting" in (run.error or "")
+
+
+async def test_a_timeout_is_not_retried(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model too slow for the request would only be too slow again."""
+    run, _repo = await _make_run(worker_db_session)
+
+    async def slow(**kwargs: object) -> RunResult:
+        raise litellm.Timeout(message="timeout", model="m", llm_provider="openai")
+
+    monkeypatch.setattr(analyze, "review_diff", slow)
+
+    await analyze.analyze_pr({**worker_ctx, "job_try": 1}, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+
+
+async def test_an_interrupted_review_is_marked_failed_not_left_running(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, _repo = await _make_run(worker_db_session)
+
+    async def cut_off(**kwargs: object) -> RunResult:
+        raise asyncio.CancelledError  # what arq's job time limit does
+
+    monkeypatch.setattr(analyze, "review_diff", cut_off)
+
+    with pytest.raises(asyncio.CancelledError):
+        await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.FAILED
+    assert run.error == analyze.INTERRUPTED
+
+
+async def test_runs_a_crashed_worker_left_behind_are_failed(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object]
+) -> None:
+    now = datetime.now(UTC)
+    abandoned, _ = await _make_run(worker_db_session)
+    abandoned.status = AnalysisRunStatus.RUNNING
+    abandoned.started_at = now - timedelta(seconds=analyze.REVIEW_JOB_TIMEOUT_S + 3600)
+    working, _ = await _make_run(worker_db_session)
+    working.status = AnalysisRunStatus.RUNNING
+    working.started_at = now - timedelta(minutes=5)
+    forgotten, _ = await _make_run(worker_db_session)
+    forgotten.created_at = now - timedelta(days=2)
+    waiting, _ = await _make_run(worker_db_session)
+    await worker_db_session.flush()
+
+    marked = await analyze.fail_stuck_runs(worker_ctx)
+
+    for run in (abandoned, working, forgotten, waiting):
+        await bind_org(worker_db_session, run.org_id)  # each is another organisation's
+        await worker_db_session.refresh(run)
+    assert marked >= 2
+    assert abandoned.status == forgotten.status == AnalysisRunStatus.FAILED
+    assert abandoned.error == analyze.INTERRUPTED
+    assert working.status == AnalysisRunStatus.RUNNING
+    assert waiting.status == AnalysisRunStatus.QUEUED

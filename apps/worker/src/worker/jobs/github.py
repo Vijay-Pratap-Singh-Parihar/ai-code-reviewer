@@ -85,7 +85,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> Non
             await execute_review(
                 session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
                 agent=agent, repo_path=None, storage=storage,
-                provider_access=provider_access_from_ctx(ctx),
+                provider_access=provider_access_from_ctx(ctx), attempt=ctx.get("job_try", 1),
             )
             await auto_post(ctx, session, run)
             return
@@ -100,7 +100,7 @@ async def review_github_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> Non
             await execute_review(
                 session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "", diff=diff,
                 agent=agent, repo_path=str(worktree), storage=storage,
-                provider_access=provider_access_from_ctx(ctx),
+                provider_access=provider_access_from_ctx(ctx), attempt=ctx.get("job_try", 1),
             )
         finally:
             await asyncio.to_thread(discard_worktree, checkout_from, worktree)

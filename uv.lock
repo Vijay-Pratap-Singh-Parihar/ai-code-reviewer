@@ -8,6 +8,7 @@ members = [
     "api",
     "db",
     "ghapp",
+    "observability",
     "revu",
     "revu-bench",
     "worker",
@@ -160,6 +161,7 @@ dependencies = [
     { name = "db" },
     { name = "fastapi" },
     { name = "ghapp" },
+    { name = "observability" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic", extra = ["email"] },
     { name = "pydantic-settings" },
@@ -179,6 +181,7 @@ requires-dist = [
     { name = "db", editable = "packages/db" },
     { name = "fastapi", specifier = ">=0.115.5" },
     { name = "ghapp", editable = "packages/ghapp" },
+    { name = "observability", editable = "packages/observability" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.3" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.9.2" },
     { name = "pydantic-settings", specifier = ">=2.6.1" },
@@ -1229,6 +1232,11 @@ wheels = [
 ]
 
 [[package]]
+name = "observability"
+version = "0.1.0"
+source = { editable = "packages/observability" }
+
+[[package]]
 name = "openai"
 version = "2.54.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2104,6 +2112,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "db" },
     { name = "ghapp" },
+    { name = "observability" },
     { name = "pydantic-settings" },
     { name = "revu" },
     { name = "sqlalchemy", extra = ["asyncio"] },
@@ -2115,6 +2124,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "db", editable = "packages/db" },
     { name = "ghapp", editable = "packages/ghapp" },
+    { name = "observability", editable = "packages/observability" },
     { name = "pydantic-settings", specifier = ">=2.6.1" },
     { name = "revu", editable = "packages/engine" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36" },

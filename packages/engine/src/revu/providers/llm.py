@@ -22,7 +22,10 @@ import litellm  # noqa: E402
 from litellm.exceptions import (  # noqa: E402
     APIConnectionError,
     AuthenticationError,
+    BadGatewayError,
+    InternalServerError,
     RateLimitError,
+    ServiceUnavailableError,
     Timeout,
 )
 
@@ -260,6 +263,24 @@ def describe_error(exc: BaseException) -> str:
     if isinstance(exc, APIConnectionError):
         return "Couldn't reach the AI provider. Check its endpoint on the AI Providers page."
     return str(exc)
+
+
+def is_transient(exc: BaseException) -> bool:
+    """A failure worth trying again in a minute: rate limiting, a dropped
+    connection, a provider-side 5xx. Not a timeout (a model too slow for
+    the request will be too slow again) or anything about the request or
+    the credentials."""
+    if isinstance(exc, Timeout):
+        return False
+    return isinstance(
+        exc,
+        RateLimitError
+        | APIConnectionError
+        | InternalServerError
+        | ServiceUnavailableError
+        | BadGatewayError,
+    )
+
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)

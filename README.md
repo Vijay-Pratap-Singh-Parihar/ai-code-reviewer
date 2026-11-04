@@ -43,7 +43,9 @@ the commands to generate them are commented next to each variable in `.env.examp
 docker compose up --build
 ```
 
-- API: http://localhost:8000/health
+- API: http://localhost:8000/health/live (process up) and
+  http://localhost:8000/health/ready (Postgres and Redis answer; also says whether a worker
+  has checked in)
 - Web: http://localhost:3000
 - Postgres: localhost:5434, Redis: localhost:6380 (overridable via `HOST_POSTGRES_PORT` /
   `HOST_REDIS_PORT` in `.env` — defaults avoid colliding with other local Postgres/Redis on
