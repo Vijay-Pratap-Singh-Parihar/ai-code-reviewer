@@ -3,6 +3,7 @@
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { Info } from "lucide-react";
 import { getAnalysisRun } from "@/lib/api-client";
 import { PostToGitHub } from "@/components/post-to-github";
 import { useRunMetadata } from "@/lib/run-metadata-store";
@@ -78,6 +79,16 @@ export default function RunPage() {
           </div>
         )}
         {data?.error && <p className="text-sm text-destructive">{data.error}</p>}
+        {data?.notices && data.notices.length > 0 && (
+          <ul aria-label="Review notes" className="flex flex-col gap-1 text-xs text-muted-foreground">
+            {data.notices.map((notice) => (
+              <li key={notice} className="flex items-start gap-1.5">
+                <Info aria-hidden className="mt-px size-3.5 shrink-0" />
+                {notice}
+              </li>
+            ))}
+          </ul>
+        )}
         {data && <PostToGitHub run={data} />}
       </div>
 

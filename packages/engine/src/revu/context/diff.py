@@ -235,3 +235,51 @@ def parse_diff(diff_text: str) -> list[FileDiff]:
 
     flush()
     return file_diffs
+
+
+_GIT_HEADER_RE = re.compile(r"^diff --git a/(.*) b/(.*)$")
+
+
+def split_file_blocks(diff_text: str) -> list[str]:
+    """Split a unified diff into one raw text block per file, unchanged, so
+    blocks can be dropped or regrouped and joined back with `"".join`.
+
+    A block starts at a `diff --git` line, or (for a diff without git's
+    extended headers) at a `--- ` line followed by `+++ ` once the current
+    block already has a hunk. Anything before the first file (a commit
+    message, say) stays attached to the first block.
+    """
+    lines = diff_text.splitlines(keepends=True)
+    blocks: list[list[str]] = [[]]
+    has_hunk = False
+    for i, line in enumerate(lines):
+        starts_file = line.startswith("diff --git ") or (
+            has_hunk
+            and line.startswith("--- ")
+            and i + 1 < len(lines)
+            and lines[i + 1].startswith("+++ ")
+        )
+        if starts_file and any(_is_file_line(x) for x in blocks[-1]):
+            blocks.append([])
+            has_hunk = False
+        blocks[-1].append(line)
+        if _HUNK_HEADER_RE.match(line):
+            has_hunk = True
+    return ["".join(block) for block in blocks if block]
+
+
+def _is_file_line(line: str) -> bool:
+    return line.startswith(("diff --git ", "--- ", "+++ ", "@@ "))
+
+
+def block_path(block: str) -> str:
+    """The file a block from `split_file_blocks` touches; also works for a
+    binary file, which has a `diff --git` header but no hunks."""
+    parsed = parse_diff(block)
+    if parsed and parsed[0].file_path:
+        return parsed[0].file_path
+    for line in block.splitlines():
+        match = _GIT_HEADER_RE.match(line)
+        if match:
+            return match.group(2)
+    return ""

@@ -63,4 +63,18 @@ describe("RunPage", () => {
     expect(await screen.findByText(/predates server-side diff storage/)).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Run run-1" })).toBeInTheDocument();
   });
+
+  it("lists how the review went: files left out, parts", async () => {
+    vi.mocked(getAnalysisRun).mockResolvedValue({
+      ...BASE_RUN,
+      status: "succeeded",
+      notices: ["Left out 1 lockfile or generated file: yarn.lock.", "Large diff: reviewed in 3 parts."],
+    });
+
+    renderPage();
+
+    const notes = await screen.findByRole("list", { name: "Review notes" });
+    expect(notes).toHaveTextContent("yarn.lock");
+    expect(notes).toHaveTextContent("reviewed in 3 parts");
+  });
 });

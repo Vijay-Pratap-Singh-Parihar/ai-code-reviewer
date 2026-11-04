@@ -19,6 +19,12 @@ from typing import Any, Literal, get_args
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 import litellm  # noqa: E402
+from litellm.exceptions import (  # noqa: E402
+    APIConnectionError,
+    AuthenticationError,
+    RateLimitError,
+    Timeout,
+)
 
 # Some models (e.g. Claude's newer reasoning-oriented models) only support a
 # fixed temperature and reject an explicit temperature=0.0. Providers differ
@@ -35,6 +41,20 @@ REASONING_LEVELS: tuple[str, ...] = get_args(Reasoning)
 # Anthropic needs room for the thinking budget inside `max_tokens`
 # (LiteLLM's budget for "high" is 4096 tokens), plus the answer itself.
 _ANTHROPIC_THINKING_MAX_TOKENS = 16_000
+
+# Every call is bounded, so a model that never stops (small local models can
+# repeat themselves indefinitely) ends in minutes, not hours. A review's JSON
+# answer fits easily in the first limit; a model that thinks first gets room
+# for its reasoning too, which providers count against the same limit.
+ANSWER_MAX_TOKENS = 4_096
+THINKING_MAX_TOKENS = 16_000
+DEFAULT_TIMEOUT_S = 600.0
+
+
+def default_max_tokens(endpoint: "ModelEndpoint | None") -> int:
+    if endpoint is not None and endpoint.reasoning == "off":
+        return ANSWER_MAX_TOKENS
+    return THINKING_MAX_TOKENS
 
 
 @dataclass(frozen=True)
@@ -122,6 +142,12 @@ class CompletionResult:
     cost_usd: float
     latency_ms: int
     tool_calls: list[ToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
+
+    @property
+    def truncated(self) -> bool:
+        """The model hit `max_tokens` before finishing its answer."""
+        return self.finish_reason == "length"
 
 
 def _parse_tool_calls(message: Any) -> list[ToolCall]:
@@ -157,15 +183,19 @@ async def complete(
     timeout: float | None = None,
 ) -> CompletionResult:
     endpoint = model if isinstance(model, ModelEndpoint) else None
-    kwargs: dict[str, Any] = {}
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-    if timeout is not None:
-        kwargs["timeout"] = timeout
+    if max_tokens is None:
+        max_tokens = default_max_tokens(endpoint)
+    kwargs: dict[str, Any] = {
+        "max_tokens": max_tokens,
+        "timeout": DEFAULT_TIMEOUT_S if timeout is None else timeout,
+    }
     if endpoint is not None:
         kwargs["api_key"] = endpoint.api_key
         if endpoint.api_base:
             kwargs["api_base"] = endpoint.api_base
+            # A self-hosted server that timed out is busy, not flaky: asking
+            # again queues the same work behind itself and triples the wait.
+            kwargs["max_retries"] = 0
         if endpoint.extra_headers:
             kwargs["extra_headers"] = endpoint.extra_headers
         kwargs.update(reasoning_kwargs(endpoint, max_tokens=max_tokens))
@@ -199,7 +229,8 @@ async def complete(
             + tokens_out * (endpoint.output_cost_per_mtok or 0.0)
         ) / 1_000_000
 
-    message = response.choices[0].message
+    choice = response.choices[0]
+    message = choice.message
     content = message.content or ""
     tool_calls = _parse_tool_calls(message)
 
@@ -210,11 +241,34 @@ async def complete(
         cost_usd=float(cost_usd),
         latency_ms=latency_ms,
         tool_calls=tool_calls,
+        finish_reason=getattr(choice, "finish_reason", None),
     )
 
 
+def describe_error(exc: BaseException) -> str:
+    """What a person should read about a failed model call: what happened
+    and what to do, instead of the provider library's exception text."""
+    if isinstance(exc, Timeout):
+        return (
+            "The model didn't answer in time. Local models on a CPU can be slow on "
+            "large pull requests: try a smaller model, a GPU, or a hosted provider."
+        )
+    if isinstance(exc, AuthenticationError):
+        return "The AI provider rejected its credentials. Check the key on the AI Providers page."
+    if isinstance(exc, RateLimitError):
+        return "The AI provider is rate limiting this key. Try again in a minute."
+    if isinstance(exc, APIConnectionError):
+        return "Couldn't reach the AI provider. Check its endpoint on the AI Providers page."
+    return str(exc)
+
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
+def strip_thinking(content: str) -> str:
+    """`content` without the `<think>...</think>` block open models put
+    their reasoning in."""
+    return _THINK_BLOCK.sub("", content)
 
 
 def extract_json(content: str) -> Any:
@@ -222,7 +276,7 @@ def extract_json(content: str) -> Any:
     it in: a `<think>...</think>` reasoning block, a ```json code fence, or
     a sentence before/after the object. Raises `json.JSONDecodeError` when
     there is no JSON object to be found."""
-    text = _THINK_BLOCK.sub("", content).strip()
+    text = strip_thinking(content).strip()
     fenced = _FENCE.match(text)
     if fenced:
         text = fenced.group(1)

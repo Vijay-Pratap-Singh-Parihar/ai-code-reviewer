@@ -1,5 +1,7 @@
+import re
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from db.organization import User
 from db.provider import ModelTier
@@ -16,7 +18,48 @@ from api.services.repositories import get_or_create_repository
 __all__ = [
     "create_analysis_run",
     "get_run_for_org",
+    "run_notices",
 ]
+
+_SHOWN_SKIPPED = 3
+
+_STOPPED = {
+    "output_token_limit": "The model's answer hit its length limit; some findings may be missing.",
+    "final_answer_malformed_after_retry": (
+        "The model's answer couldn't be read; some findings may be missing."
+    ),
+    "max_tool_rounds_reached": (
+        "The cross-file agent ran out of investigation steps before giving its verdict."
+    ),
+}
+
+
+def run_notices(snapshot: dict[str, Any]) -> list[str]:
+    """What the run page should tell its reader about how the review went,
+    from the notes the worker left in the run's config snapshot."""
+    notices: list[str] = []
+    if snapshot.get("agent_fallback"):
+        notices.append("Reviewed from the diff only: the configured model can't call tools.")
+    skipped = [str(p) for p in snapshot.get("skipped_files") or []]
+    if skipped:
+        names = ", ".join(skipped[:_SHOWN_SKIPPED])
+        more = f" and {len(skipped) - _SHOWN_SKIPPED} more" if len(skipped) > _SHOWN_SKIPPED else ""
+        noun = "file" if len(skipped) == 1 else "files"
+        notices.append(f"Left out {len(skipped)} lockfile or generated {noun}: {names}{more}.")
+    parts = snapshot.get("parts")
+    if isinstance(parts, int) and parts > 1:
+        notices.append(f"Large diff: reviewed in {parts} parts.")
+    reason = str(snapshot.get("stopped_reason") or "")
+    failed = re.match(r"parts_failed \((\d+) of (\d+)\)", reason)
+    if failed:
+        notices.append(
+            f"{failed.group(1)} of {failed.group(2)} parts got no answer from the model; "
+            "files in those parts have no findings."
+        )
+    elif reason:
+        key = reason.split(" ", 1)[0]
+        notices.append(_STOPPED.get(key, f"The review stopped early ({reason})."))
+    return notices
 
 
 async def _get_or_create_pull_request(

@@ -185,7 +185,7 @@ async def test_reasoning_on_a_self_hosted_model_keeps_the_temperature(
     )
     assert sent["reasoning_effort"] == "high"
     assert sent["temperature"] == 0.0
-    assert "max_tokens" not in sent
+    assert sent["max_tokens"] == llm.THINKING_MAX_TOKENS  # every call is bounded
 
 
 async def test_anthropic_thinking_drops_temperature_and_makes_room_for_the_budget(
@@ -203,3 +203,44 @@ async def test_hosted_openai_reasoning_drops_temperature(monkeypatch: pytest.Mon
     sent = await _sent_for(monkeypatch, llm.ModelEndpoint("openai/gpt-5", "k", reasoning="low"))
     assert sent["reasoning_effort"] == "low"
     assert "temperature" not in sent
+
+
+async def test_every_call_is_bounded_and_a_self_hosted_server_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = await _sent_for(
+        monkeypatch, llm.ModelEndpoint("openai/qwen3.5:4b", "k", OLLAMA, reasoning="off")
+    )
+    hosted = await _sent_for(monkeypatch, llm.ModelEndpoint("groq/openai/gpt-oss-120b", "k"))
+
+    assert local["max_tokens"] == llm.ANSWER_MAX_TOKENS
+    assert local["timeout"] == llm.DEFAULT_TIMEOUT_S
+    assert local["max_retries"] == 0  # a busy server asked again only gets busier
+    assert hosted["max_tokens"] == llm.THINKING_MAX_TOKENS  # room to think when unset
+    assert "max_retries" not in hosted  # transient errors on a hosted API are worth a retry
+
+
+async def test_an_answer_cut_off_at_max_tokens_is_reported_as_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = _FakeResponse('{"findings": [')
+    response.choices[0].finish_reason = "length"  # type: ignore[attr-defined]
+
+    async def fake_acompletion(**kwargs: object) -> _FakeResponse:
+        return response
+
+    monkeypatch.setattr(llm.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm.litellm, "completion_cost", lambda **kwargs: 0.0)
+
+    result = await llm.complete(model="m", messages=[{"role": "user", "content": "hi"}])
+
+    assert result.truncated
+
+
+def test_provider_errors_are_described_in_words_a_person_can_act_on() -> None:
+    timeout = llm.litellm.Timeout(message="Request timed out", model="m", llm_provider="openai")
+    auth = llm.litellm.AuthenticationError(message="401", model="m", llm_provider="groq")
+
+    assert "didn't answer in time" in llm.describe_error(timeout)
+    assert "AI Providers page" in llm.describe_error(auth)
+    assert llm.describe_error(RuntimeError("disk full")) == "disk full"

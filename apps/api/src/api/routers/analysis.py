@@ -37,6 +37,7 @@ def _to_public(
         github_review_url=run.github_review_url,
         posted_at=run.posted_at,
         post_error=run.post_error,
+        notices=analysis_service.run_notices(run.config_snapshot),
     )
 
 
