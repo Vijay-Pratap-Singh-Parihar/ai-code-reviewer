@@ -168,7 +168,9 @@ def test_cli_split_and_config_template(tmp_path: Path) -> None:
     assert sum(v == "dev" for v in split["split"].values()) == 3
     systems = load_config(tmp_path / "systems.json").systems
     assert [s.name for s in systems] == ["B0-local-qwen", "B0-groq-gpt-oss-120b"]
-    assert systems[1].api_key_env == "GROQ_API_KEY" and "api_key" not in json.dumps(split)
+    # The hosted system uses the provider configured in the UI, not a key in the shell.
+    assert (systems[1].org, systems[1].provider) == ("Your organization", "Groq")
+    assert systems[1].api_key_env is None and "api_key" not in json.dumps(split)
 
 
 def test_config_template_never_contains_a_key(tmp_path: Path) -> None:
