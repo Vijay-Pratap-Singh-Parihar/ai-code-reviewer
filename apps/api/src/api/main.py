@@ -5,12 +5,19 @@ from contextlib import asynccontextmanager
 from db.tenancy import rls_bypass_reason
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from observability import REQUEST_ID_HEADER, configure_logging, default_format
 
 from api.core.config import get_settings
+from api.core.request_context import RequestContextMiddleware
 from api.db.session import engine
 from api.routers import analysis, audit, auth, branch_index, github, health, providers, repos
 
 settings = get_settings()
+configure_logging(
+    service="api",
+    level=settings.log_level,
+    fmt=settings.log_format or default_format(settings.environment),
+)
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +39,10 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[REQUEST_ID_HEADER],
 )
+# Outermost, so the request id covers everything below it, CORS included.
+app.add_middleware(RequestContextMiddleware)
 
 app.include_router(health.router)
 app.include_router(auth.router)

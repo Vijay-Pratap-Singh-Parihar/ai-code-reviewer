@@ -46,6 +46,10 @@ def run_notices(snapshot: dict[str, Any]) -> list[str]:
         more = f" and {len(skipped) - _SHOWN_SKIPPED} more" if len(skipped) > _SHOWN_SKIPPED else ""
         noun = "file" if len(skipped) == 1 else "files"
         notices.append(f"Left out {len(skipped)} lockfile or generated {noun}: {names}{more}.")
+    retries = snapshot.get("retries")
+    if isinstance(retries, int) and retries > 0:
+        times = "once" if retries == 1 else f"{retries} times"
+        notices.append(f"The AI provider was briefly unavailable; the review was retried {times}.")
     parts = snapshot.get("parts")
     if isinstance(parts, int) and parts > 1:
         notices.append(f"Large diff: reviewed in {parts} parts.")

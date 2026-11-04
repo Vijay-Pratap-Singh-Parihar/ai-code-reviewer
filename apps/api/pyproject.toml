@@ -19,12 +19,14 @@ dependencies = [
     "revu",
     "db",
     "ghapp",
+    "observability",
 ]
 
 [tool.uv.sources]
 revu = { workspace = true }
 db = { workspace = true }
 ghapp = { workspace = true }
+observability = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

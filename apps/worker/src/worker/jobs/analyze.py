@@ -1,11 +1,14 @@
+import asyncio
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from arq import Retry
 from db.branch_index import BranchIndex
+from db.organization import Organization
 from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullRequest
 from db.repository import Repository
 from db.tenancy import bind_org
@@ -13,14 +16,32 @@ from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
 from revu.index.store import load_graph
 from revu.models import Finding, RunResult
-from revu.providers.llm import ModelEndpoint, describe_error
+from revu.providers.llm import ModelEndpoint, describe_error, is_transient
 from revu.verify import verify_findings
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from worker.providers import ProviderAccess, endpoint_for_run, provider_access_from_ctx
 from worker.storage import TenantStorage
 
 logger = logging.getLogger(__name__)
+
+# A review on a local model can take several minutes per part; arq's own
+# 5-minute default would cancel it part-way.
+REVIEW_JOB_TIMEOUT_S = 60 * 60
+# Attempts for a review that keeps hitting transient provider errors,
+# waiting RETRY_BASE_S, then twice that, between them.
+REVIEW_MAX_TRIES = 3
+RETRY_BASE_S = 30
+# `fail_stuck_runs` leaves a running review this long past its time limit
+# (arq may still be cleaning it up), and a queued one this long in all.
+STUCK_GRACE_S = 15 * 60
+STUCK_QUEUED_S = 6 * 60 * 60
+
+INTERRUPTED = (
+    "The review was interrupted before it finished (the worker restarted or the review hit "
+    "its time limit). Run it again."
+)
 
 
 async def _run_cross_file(
@@ -93,10 +114,18 @@ async def execute_review(
     repo_path: str | None,
     storage: TenantStorage | None,
     provider_access: ProviderAccess,
+    attempt: int = 1,
 ) -> None:
     """The part of a review shared by every trigger path: run the selected
     reviewer on an already-`running` run, then persist findings and mark it
-    succeeded, or record the error and mark it failed."""
+    succeeded, or record the error and mark it failed.
+
+    A transient provider error (rate limiting, a dropped connection) on an
+    attempt before the last puts the run back in the queue and raises arq's
+    `Retry`, so the job runs again after a short wait. Interrupted (the
+    job's time limit, or the worker shutting down), the run is marked failed
+    with that reason rather than left "running".
+    """
     try:
         model = await endpoint_for_run(session, run, provider_access)
         if agent == "cross_file" and not model.supports_tools:
@@ -121,7 +150,18 @@ async def execute_review(
             )
             _record_usage(run, result)
             findings = result.findings
+    except asyncio.CancelledError:
+        logger.warning("review of run %s interrupted", run.id)
+        await mark_run_failed(session, run, RuntimeError(INTERRUPTED))
+        raise
     except Exception as exc:
+        if is_transient(exc) and attempt < REVIEW_MAX_TRIES:
+            wait_s = RETRY_BASE_S * 2 ** (attempt - 1)
+            logger.warning(
+                "review of run %s hit a transient error, retrying in %ds: %s", run.id, wait_s, exc
+            )
+            await mark_run_queued_for_retry(session, run, retries=attempt)
+            raise Retry(defer=wait_s) from exc
         logger.exception("review of run %s failed", run.id)
         await mark_run_failed(session, run, exc)
         return
@@ -150,6 +190,14 @@ async def execute_review(
 async def mark_run_running(session: AsyncSession, run: AnalysisRun) -> None:
     run.status = AnalysisRunStatus.RUNNING
     run.started_at = datetime.now(UTC)
+    await session.commit()
+
+
+async def mark_run_queued_for_retry(
+    session: AsyncSession, run: AnalysisRun, *, retries: int
+) -> None:
+    run.status = AnalysisRunStatus.QUEUED
+    run.config_snapshot = {**run.config_snapshot, "retries": retries}
     await session.commit()
 
 
@@ -189,5 +237,45 @@ async def analyze_pr(ctx: dict[str, Any], run_id: str, org_id: str) -> None:
         await execute_review(
             session, run, repo=repo, pr_title=pr.title, pr_body=pr.body or "",
             diff=run.diff_text, agent="diff_only", repo_path=None, storage=None,
-            provider_access=provider_access_from_ctx(ctx),
+            provider_access=provider_access_from_ctx(ctx), attempt=ctx.get("job_try", 1),
         )
+
+
+async def fail_stuck_runs(ctx: dict[str, Any]) -> int:
+    """Cron: mark failed the runs nothing will ever finish, e.g. after a
+    worker was killed mid-review: "running" for longer than a review job is
+    allowed to take, or "queued" for longer than any queue should be.
+    Returns how many it marked."""
+    now = datetime.now(UTC)
+    running_cutoff = now - timedelta(seconds=REVIEW_JOB_TIMEOUT_S + STUCK_GRACE_S)
+    queued_cutoff = now - timedelta(seconds=STUCK_QUEUED_S)
+    session_factory = ctx["db_session_factory"]
+    async with session_factory() as session:
+        org_ids = list(await session.scalars(select(Organization.id)))
+    marked = 0
+    for org_id in org_ids:
+        async with session_factory() as session:
+            await bind_org(session, org_id)
+            stuck = await session.scalars(
+                select(AnalysisRun).where(
+                    or_(
+                        and_(
+                            AnalysisRun.status == AnalysisRunStatus.RUNNING,
+                            AnalysisRun.started_at < running_cutoff,
+                        ),
+                        and_(
+                            AnalysisRun.status == AnalysisRunStatus.QUEUED,
+                            AnalysisRun.created_at < queued_cutoff,
+                        ),
+                    )
+                )
+            )
+            for run in stuck:
+                run.status = AnalysisRunStatus.FAILED
+                run.error = INTERRUPTED
+                run.finished_at = now
+                marked += 1
+            await session.commit()
+    if marked:
+        logger.warning("marked %d stuck runs failed", marked)
+    return marked

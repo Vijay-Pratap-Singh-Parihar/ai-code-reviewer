@@ -48,6 +48,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core.queue import enqueue
 from api.services.providers import route_snapshot
 
 logger = logging.getLogger(__name__)
@@ -383,7 +384,7 @@ async def queue_github_review(
         metadata={"run_id": str(run.id), "agent": agent, "trigger": trigger},
     )
     await session.commit()
-    await redis.enqueue_job("review_github_pr", str(run.id), str(run.org_id))
+    await enqueue(redis, "review_github_pr", str(run.id), str(run.org_id))
     return run
 
 
@@ -475,7 +476,8 @@ async def queue_github_index(
         metadata={"branch_index_id": str(row.id), "trigger": trigger, "force_full": force_full},
     )
     await session.commit()
-    await redis.enqueue_job(
+    await enqueue(
+        redis,
         "sync_and_index_branch", str(row.id), str(row.org_id), target_sha, force_full
     )
     return row

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.deps import CurrentUser, RedisPool
+from api.core.queue import enqueue
 from api.db.session import get_db
 from api.schemas.analysis import AnalysisRequest, AnalysisRunPublic, FindingPublic
 from api.services import analysis as analysis_service
@@ -56,7 +57,7 @@ async def trigger_analysis(
     # Only the run id and its organisation cross the queue: the worker binds
     # its session to that organisation and reads the diff, title and body
     # back from the run's own rows, under row-level security.
-    await redis.enqueue_job("analyze_pr", str(run.id), str(run.org_id))
+    await enqueue(redis, "analyze_pr", str(run.id), str(run.org_id))
 
     # A run this endpoint just created has no findings yet by definition —
     # accessing `run.findings` here would trigger a lazy load outside an
@@ -102,6 +103,6 @@ async def post_to_github(
     if run.status != AnalysisRunStatus.SUCCEEDED:
         raise HTTPException(status.HTTP_409_CONFLICT, "only a finished review can be posted")
     if run.github_review_id is None:
-        await redis.enqueue_job("post_github_review", str(run.id), str(run.org_id), str(user.id))
+        await enqueue(redis, "post_github_review", str(run.id), str(run.org_id), str(user.id))
     pr = run.pull_request
     return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)

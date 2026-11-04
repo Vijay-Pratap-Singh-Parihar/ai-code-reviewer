@@ -16,6 +16,7 @@ from db.repository import Repository
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.config import get_settings
+from api.core.queue import enqueue
 
 
 class StillConnectedError(Exception):
@@ -50,7 +51,8 @@ async def request_repository_purge(
         metadata={"repository_id": str(repo.id)},
     )
     await session.commit()
-    await redis.enqueue_job(
+    await enqueue(
+        redis,
         "purge_repository_data", str(repo.org_id), str(repo.id), str(actor.id)
     )
 
@@ -73,7 +75,8 @@ async def request_installation_purge(
         metadata={"installation_id": installation.installation_id},
     )
     await session.commit()
-    await redis.enqueue_job(
+    await enqueue(
+        redis,
         "purge_installation_data",
         str(installation.org_id),
         str(installation.id),

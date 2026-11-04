@@ -1,16 +1,19 @@
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from arq.connections import RedisSettings
 from arq.cron import cron
+from arq.worker import func
 from db.tenancy import rls_bypass_reason
 from ghapp import GitHubAppConfig, load_private_key
+from observability import configure_logging, default_format
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from worker.github import make_client_factory
-from worker.jobs.analyze import analyze_pr
+from worker.job_context import traced
+from worker.jobs.analyze import REVIEW_JOB_TIMEOUT_S, REVIEW_MAX_TRIES, analyze_pr, fail_stuck_runs
 from worker.jobs.db_ping import db_ping
 from worker.jobs.github import review_github_pr, sync_and_index_branch
 from worker.jobs.ping import ping
@@ -33,6 +36,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(".env", _REPO_ROOT_ENV), extra="ignore")
 
     environment: str = "development"
+    log_level: str = "INFO"
+    log_format: Literal["json", "text"] | None = None
     # Same meaning as the API's: may AI provider endpoints be on private or
     # loopback networks? Unset = yes outside production, no in production.
     revu_allow_private_provider_urls: bool | None = None
@@ -79,25 +84,51 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def _configure_logging() -> None:
+    configure_logging(
+        service="worker",
+        level=settings.log_level,
+        fmt=settings.log_format or default_format(settings.environment),
+    )
+
+
+_configure_logging()
+
+# A branch index of a large repository clones and parses it all.
+INDEX_JOB_TIMEOUT_S = 30 * 60
+
+
 class WorkerSettings:
     """ARQ worker entrypoint config."""
 
+    # arq's default 5-minute limit would cut off a review on a local model
+    # (several minutes per part on a laptop CPU); reviews and index builds
+    # get their own. Reviews retry transient provider errors themselves
+    # (`worker.jobs.analyze.execute_review`), up to REVIEW_MAX_TRIES.
     functions = [
-        ping,
-        db_ping,
-        analyze_pr,
-        review_github_pr,
-        sync_and_index_branch,
-        purge_repository_data,
-        purge_installation_data,
-        post_github_review,
+        func(traced(ping)),
+        func(traced(db_ping)),
+        func(traced(analyze_pr), timeout=REVIEW_JOB_TIMEOUT_S, max_tries=REVIEW_MAX_TRIES),
+        func(traced(review_github_pr), timeout=REVIEW_JOB_TIMEOUT_S, max_tries=REVIEW_MAX_TRIES),
+        func(traced(sync_and_index_branch), timeout=INDEX_JOB_TIMEOUT_S),
+        func(traced(purge_repository_data)),
+        func(traced(purge_installation_data)),
+        func(traced(post_github_review)),
     ]
-    # Hourly, off the hour so it doesn't coincide with other cron work.
-    cron_jobs = [cron(purge_expired_data, minute={17}, unique=True)]
+    job_timeout = 10 * 60
+    cron_jobs = [
+        # Hourly, off the hour so it doesn't coincide with other cron work.
+        cron(traced(purge_expired_data), minute={17}, unique=True),
+        # Runs a crashed worker left "running" or "queued" for good.
+        cron(traced(fail_stuck_runs), minute=set(range(5, 60, 10)), unique=True),
+    ]
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
 
     @staticmethod
     async def on_startup(ctx: dict[str, Any]) -> None:
+        # The `arq` command applies its own logging config after importing
+        # this module; put ours back so each line is written once, in format.
+        _configure_logging()
         engine = create_async_engine(settings.database_url, pool_pre_ping=True)
         problem = await rls_bypass_reason(engine)
         if problem and settings.environment == "production":

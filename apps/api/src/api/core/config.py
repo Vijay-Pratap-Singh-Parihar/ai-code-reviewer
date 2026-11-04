@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,6 +21,9 @@ class Settings(BaseSettings):
 
     environment: str = "development"
     log_level: str = "INFO"
+    # "json" (one object per line, for a log pipeline) or "text"; unset =
+    # json in production, text elsewhere.
+    log_format: Literal["json", "text"] | None = None
     api_cors_origins: str = "http://localhost:3000"
 
     # The API connects as `revu_app` (no superuser, no BYPASSRLS), so
