@@ -12,9 +12,19 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 const PAGE_SIZE = 50;
 const ALL = "all";
 
+function detailValue(value: unknown): string {
+  // Nested values (a budget's "before" and "after") read as "key value, ...".
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    return Object.entries(value)
+      .map(([key, inner]) => `${key.replaceAll("_", " ")} ${inner ?? "none"}`)
+      .join(", ");
+  }
+  return String(value);
+}
+
 function details(entry: AuditEntry): string {
   return Object.entries(entry.metadata)
-    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${String(value)}`)
+    .map(([key, value]) => `${key.replaceAll("_", " ")}: ${detailValue(value)}`)
     .join(" · ");
 }
 

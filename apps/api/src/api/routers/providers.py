@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import rate_limit
 from api.core.deps import CurrentUser, OrgAdmin
 from api.db.session import get_db
 from api.schemas.providers import (
@@ -130,7 +131,11 @@ async def delete_provider(provider_id: uuid.UUID, user: OrgAdmin, db: Db) -> Res
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/{provider_id}/test", response_model=ProviderTestResult)
+@router.post(
+    "/{provider_id}/test",
+    response_model=ProviderTestResult,
+    dependencies=[rate_limit.per_user(rate_limit.PROVIDER_TEST)],
+)
 async def test_provider(
     provider_id: uuid.UUID, body: ProviderTestRequest, user: OrgAdmin, db: Db
 ) -> ProviderTestResult:
@@ -145,7 +150,9 @@ async def test_provider(
         raise _http(exc) from exc
 
 
-@router.post("/{provider_id}/test/stream")
+@router.post(
+    "/{provider_id}/test/stream", dependencies=[rate_limit.per_user(rate_limit.PROVIDER_TEST)]
+)
 async def test_provider_stream(
     provider_id: uuid.UUID, body: ProviderTestRequest, user: OrgAdmin, db: Db
 ) -> StreamingResponse:

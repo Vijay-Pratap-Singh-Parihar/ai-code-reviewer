@@ -17,6 +17,7 @@ from db.audit import AuditAction, record_audit
 from db.organization import User
 from db.provider import ModelTier
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest
+from db.usage import ensure_within_budget
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.core.queue import enqueue
@@ -73,6 +74,7 @@ async def retry_run(
     # A pasted diff: review the same diff again.
     if not run.diff_text:
         raise RetryRefused("the failed review's diff is no longer stored")
+    await ensure_within_budget(session, run.org_id)
     model = await route_snapshot(session, run.org_id, ModelTier.REVIEW)
     retry = AnalysisRun(
         pr_id=pr.id,

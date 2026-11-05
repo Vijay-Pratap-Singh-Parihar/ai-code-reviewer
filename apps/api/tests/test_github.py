@@ -540,6 +540,28 @@ async def test_a_pr_review_needs_a_configured_review_model(
     assert _enqueued(api_client) == []
 
 
+async def test_no_pr_review_is_queued_once_the_budget_is_reached(
+    api_client: AsyncClient, fake_github: FakeGitHub, webhook_secret: str
+) -> None:
+    headers = await _signup(api_client, "budget-pr@example.com")
+    await configure_review_model(api_client, headers)
+    await _link(api_client, headers)
+    repo_id = await _repo_id(api_client, headers, "acme/widgets")
+    await api_client.patch(f"/repos/{repo_id}", json={"auto_review_enabled": True}, headers=headers)
+    # A zero budget: no paid reviews at all.
+    await api_client.put("/usage/budget", json={"monthly_budget_usd": "0"}, headers=headers)
+
+    manual = await api_client.post(
+        f"/repos/{repo_id}/pulls/7/analysis", json={"agent": "diff_only"}, headers=headers
+    )
+    automatic = await _send_webhook(api_client, "pull_request", _pr_event("opened"))
+
+    assert manual.status_code == 402
+    assert "monthly budget" in manual.json()["detail"]
+    assert automatic.json()["detail"] == "the monthly budget is reached; not auto-reviewed"
+    assert _enqueued(api_client) == []
+
+
 async def test_list_pulls_merges_latest_run(
     api_client: AsyncClient, fake_github: FakeGitHub
 ) -> None:

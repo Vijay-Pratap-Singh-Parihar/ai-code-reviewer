@@ -55,8 +55,17 @@ def redact(text: str) -> str:
     return _SECRETS.sub(mask, text)
 
 
+# Bookkeeping libraries stamp onto every record (LiteLLM marks the records
+# its own redaction filter has seen); not information for the reader.
+_FOREIGN_PREFIXES = ("litellm_",)
+
+
 def _extras(record: logging.LogRecord) -> dict[str, object]:
-    return {k: v for k, v in vars(record).items() if k not in _STANDARD_ATTRS}
+    return {
+        k: v
+        for k, v in vars(record).items()
+        if k not in _STANDARD_ATTRS and not k.startswith(_FOREIGN_PREFIXES)
+    }
 
 
 class JsonFormatter(logging.Formatter):

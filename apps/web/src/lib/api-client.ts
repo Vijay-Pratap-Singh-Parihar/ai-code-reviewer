@@ -454,6 +454,47 @@ export function indexRepository(
   });
 }
 
+// --- Usage & Budget ----------------------------------------------------------
+
+export type BudgetStatus = "ok" | "warning" | "exceeded";
+
+export type Budget = {
+  /** null: no cap of that kind. */
+  monthly_budget_usd: number | null;
+  token_cap: number | null;
+  warn_percent: number;
+};
+
+export type UsageTotals = { cost_usd: number; tokens: number; runs: number };
+
+export type Usage = {
+  period_start: string;
+  resets_at: string;
+  spent_usd: number;
+  tokens: number;
+  runs: number;
+  budget: Budget;
+  /** Of whichever cap is closer to being reached; null without a cap. */
+  used_percent: number | null;
+  status: BudgetStatus;
+  daily: (UsageTotals & { day: string })[];
+  months: (UsageTotals & { month: string })[];
+  by_repo: (UsageTotals & { repo_full_name: string })[];
+  by_model: (UsageTotals & { provider_name: string; model: string })[];
+};
+
+export function getUsage(): Promise<Usage> {
+  return apiFetchJson<Usage>("/usage");
+}
+
+export function setBudget(body: {
+  monthly_budget_usd: string | null;
+  token_cap: number | null;
+  warn_percent: number;
+}): Promise<Budget> {
+  return apiFetchJson<Budget>("/usage/budget", { method: "PUT", body: JSON.stringify(body) });
+}
+
 /** Renders an `ApiError` (or any thrown value) as one user-facing line. */
 export function formatApiError(err: unknown): string {
   if (err instanceof ApiError) {

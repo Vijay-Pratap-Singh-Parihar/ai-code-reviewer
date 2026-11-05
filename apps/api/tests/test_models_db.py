@@ -20,7 +20,8 @@ def _make_org(session: Session, **overrides: object) -> Organization:
 def test_organization_defaults_to_free_plan(db_session: Session) -> None:
     org = _make_org(db_session)
     assert org.plan == OrgPlan.FREE
-    assert org.token_used_current_period == 0
+    assert org.monthly_budget_usd is None
+    assert org.budget_warn_percent == 80
 
 
 def test_enum_columns_store_lowercase_value_not_member_name(db_session: Session) -> None:

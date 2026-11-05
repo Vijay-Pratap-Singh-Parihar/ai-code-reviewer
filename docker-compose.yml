@@ -106,6 +106,7 @@ services:
       # stage that actually runs the build (see apps/web/Dockerfile).
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_GITHUB_WEB_URL: ${NEXT_PUBLIC_GITHUB_WEB_URL:-https://github.com}
     restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}

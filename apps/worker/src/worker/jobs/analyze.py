@@ -12,6 +12,7 @@ from db.organization import Organization
 from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullRequest
 from db.repository import Repository
 from db.tenancy import bind_org
+from db.usage import BudgetExceededError, ensure_within_budget, record_run_usage
 from observability import metrics
 from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
@@ -128,6 +129,9 @@ async def execute_review(
     with that reason rather than left "running".
     """
     try:
+        # A run queued before the month's cap was reached doesn't start once
+        # it is (see `db.usage`).
+        await ensure_within_budget(session, run.org_id)
         model = await endpoint_for_run(session, run, provider_access)
         if agent == "cross_file" and not model.supports_tools:
             # The cross-file agent works by calling tools; a model that can't
@@ -156,6 +160,11 @@ async def execute_review(
         metrics.REVIEWS.labels(agent, "interrupted").inc()
         await mark_run_failed(session, run, RuntimeError(INTERRUPTED))
         raise
+    except BudgetExceededError as exc:
+        logger.info("review of run %s not started: monthly budget reached", run.id)
+        metrics.REVIEWS.labels(agent, "over_budget").inc()
+        await mark_run_failed(session, run, exc)
+        return
     except Exception as exc:
         if is_transient(exc) and attempt < REVIEW_MAX_TRIES:
             wait_s = RETRY_BASE_S * 2 ** (attempt - 1)
@@ -188,6 +197,7 @@ async def execute_review(
 
     run.status = AnalysisRunStatus.SUCCEEDED
     run.finished_at = datetime.now(UTC)
+    record_run_usage(session, run)
     await session.commit()
     _count_success(agent, run, findings)
 

@@ -56,7 +56,8 @@ JOB_DURATION = Histogram(
 )
 REVIEWS = Counter(
     "revu_reviews_total",
-    "Reviews finished, by agent and outcome (succeeded, failed, retried, interrupted).",
+    "Reviews finished, by agent and outcome "
+    "(succeeded, failed, retried, interrupted, over_budget).",
     ("agent", "outcome"),
     registry=REGISTRY,
 )

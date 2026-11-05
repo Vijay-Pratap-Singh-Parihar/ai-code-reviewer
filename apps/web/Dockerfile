@@ -9,6 +9,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+# Read by next.config.ts for the Content-Security-Policy (GitHub Enterprise).
+ARG NEXT_PUBLIC_GITHUB_WEB_URL=https://github.com
+ENV NEXT_PUBLIC_GITHUB_WEB_URL=${NEXT_PUBLIC_GITHUB_WEB_URL}
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

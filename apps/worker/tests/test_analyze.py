@@ -762,3 +762,65 @@ async def test_a_failed_and_a_retried_review_are_counted_apart(
 
     assert _sample("revu_reviews_total", agent="diff_only", outcome="retried") == retried + 1
     assert _sample("revu_reviews_total", agent="diff_only", outcome="failed") == failed + 1
+
+
+async def test_a_finished_review_is_added_to_the_usage_ledger_once(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from db.ledger import TokenUsageLedger
+
+    run, _repo = await _make_run(worker_db_session)
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        return RunResult(findings=[], tokens_in=300, tokens_out=50, cost_usd=0.25, latency_ms=5)
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    rows = (
+        await worker_db_session.scalars(
+            select(TokenUsageLedger).where(TokenUsageLedger.run_id == run.id)
+        )
+    ).all()
+    assert [(r.tokens_in, r.tokens_out, float(r.cost_usd)) for r in rows] == [(300, 50, 0.25)]
+
+
+async def test_a_queued_review_does_not_start_once_the_budget_is_reached(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from decimal import Decimal
+
+    from db.ledger import TokenUsageLedger
+
+    earlier, repo = await _make_run(worker_db_session)
+    earlier.status = AnalysisRunStatus.SUCCEEDED
+    worker_db_session.add(
+        TokenUsageLedger(
+            org_id=repo.org_id, run_id=earlier.id, tokens_in=10, tokens_out=0, cost_usd=5
+        )
+    )
+    org = await worker_db_session.get(Organization, repo.org_id)
+    assert org is not None
+    org.monthly_budget_usd = Decimal("5.00")
+    run = AnalysisRun(
+        pr_id=earlier.pr_id,
+        config_snapshot=earlier.config_snapshot,
+        status=AnalysisRunStatus.QUEUED,
+        diff_text="diff text",
+    )
+    worker_db_session.add(run)
+    await worker_db_session.commit()
+    called = False
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        nonlocal called
+        called = True
+        return RunResult(findings=[])
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert not called
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "monthly budget of $5.00" in (run.error or "")

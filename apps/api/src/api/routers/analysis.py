@@ -5,6 +5,7 @@ from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullR
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import rate_limit
 from api.core.deps import CurrentUser, RedisPool
 from api.core.queue import enqueue
 from api.db.session import get_db
@@ -51,7 +52,12 @@ def _uuid_or_none(value: object) -> uuid.UUID | None:
         return None
 
 
-@router.post("", response_model=AnalysisRunPublic, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "",
+    response_model=AnalysisRunPublic,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limit.per_user(rate_limit.REVIEW)],
+)
 async def trigger_analysis(
     body: AnalysisRequest,
     user: CurrentUser,
@@ -118,7 +124,10 @@ async def post_to_github(
 
 
 @router.post(
-    "/{run_id}/retry", response_model=AnalysisRunPublic, status_code=status.HTTP_202_ACCEPTED
+    "/{run_id}/retry",
+    response_model=AnalysisRunPublic,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limit.per_user(rate_limit.REVIEW)],
 )
 async def retry_analysis(
     run_id: uuid.UUID,
