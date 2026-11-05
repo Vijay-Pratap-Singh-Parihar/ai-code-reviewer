@@ -16,6 +16,7 @@ from db.usage import BudgetExceededError, ensure_within_budget, record_run_usage
 from observability import metrics
 from revu.agents.cross_file import review_cross_file
 from revu.agents.diff_only import review_diff
+from revu.context.impact import blast_radius
 from revu.index.store import load_graph
 from revu.models import Finding, RunResult
 from revu.providers.llm import ModelEndpoint, describe_error, is_transient
@@ -73,6 +74,7 @@ async def _run_cross_file(
     graph_path = storage.require_index_path(Path(branch_index.graph_ref), repo.org_id, repo.id)
     graph = load_graph(graph_path, signing_key=storage.signing_key)
     repo_root = Path(repo_path)
+    run.blast_radius = _blast_radius(graph, diff, run_id=run.id)
 
     result = await review_cross_file(
         pr_title=pr_title, pr_body=pr_body, diff=diff,
@@ -83,6 +85,16 @@ async def _run_cross_file(
     run.config_snapshot = {**run.config_snapshot, "verification": asdict(verification.report)}
     _record_usage(run, result)
     return verification.findings
+
+
+def _blast_radius(graph: Any, diff: str, *, run_id: uuid.UUID) -> dict[str, Any] | None:
+    """What the change can affect, for the run page. Read off the graph, no
+    model call; a failure here never fails the review."""
+    try:
+        return blast_radius(graph, diff)
+    except Exception:
+        logger.exception("blast radius for run %s could not be computed", run_id)
+        return None
 
 
 def _record_usage(run: AnalysisRun, result: RunResult) -> None:

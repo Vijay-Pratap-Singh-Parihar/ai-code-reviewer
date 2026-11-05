@@ -200,6 +200,27 @@ export function giveFindingFeedback(
 
 export type AnalysisRunStatus = "queued" | "running" | "succeeded" | "failed";
 
+export type BlastNode = {
+  id: number;
+  name: string;
+  kind: string;
+  file_path: string;
+  line_start: number;
+  line_end: number;
+  /** 0: changed by the pull request; n: calls a changed symbol n calls away. */
+  distance: number;
+};
+
+export type BlastRadius = {
+  depth: number;
+  changed: number;
+  impacted: number;
+  impacted_files: number;
+  truncated: boolean;
+  nodes: BlastNode[];
+  edges: { caller: number; callee: number }[];
+};
+
 export type AnalysisRunPublic = {
   id: string;
   status: AnalysisRunStatus;
@@ -227,6 +248,8 @@ export type AnalysisRunPublic = {
   notices?: string[];
   /** The failed run this one retries, when it is a retry. */
   retry_of?: string | null;
+  /** What the change can affect (cross-file reviews only). */
+  blast_radius?: BlastRadius | null;
 };
 
 /** Run a failed review again as a new run; answers with the new run. */
