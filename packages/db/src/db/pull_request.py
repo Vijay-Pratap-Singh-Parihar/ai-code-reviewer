@@ -132,6 +132,9 @@ class AnalysisRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     posted_at: Mapped[datetime | None] = mapped_column(TZDateTime)
     # Why the last attempt to post failed (missing permission, PR closed...).
     post_error: Mapped[str | None] = mapped_column(Text)
+    # The code the change can affect, from the branch graph (cross-file
+    # reviews only): `revu.context.impact.blast_radius`'s JSON.
+    blast_radius: Mapped[dict[str, object] | None] = mapped_column(JSONB)
 
     pull_request: Mapped[PullRequest] = relationship(back_populates="analysis_runs")
     findings: Mapped[list["FindingRecord"]] = relationship(
