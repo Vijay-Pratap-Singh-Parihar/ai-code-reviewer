@@ -22,18 +22,12 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
-  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar";
 
-/**
- * Wired-up sections first. The rest of `Product_Architecture_FullStack.md`
- * §6's planned sections are shown disabled with a "Soon" badge rather than
- * omitted entirely — visualizing the real planned product instead of either
- * a dead link (bad) or hiding the roadmap (less honest about what's coming).
- */
+/** The product's screens (`Product_Architecture_FullStack.md` §6). */
 const NAV_ITEMS = [
   {
     title: "Dashboard",
@@ -60,6 +54,18 @@ const NAV_ITEMS = [
     isActive: (path: string) => path.startsWith("/providers"),
   },
   {
+    title: "Branch Memory",
+    href: "/branch-memory",
+    icon: Network,
+    isActive: (path: string) => path.startsWith("/branch-memory"),
+  },
+  {
+    title: "History",
+    href: "/history",
+    icon: History,
+    isActive: (path: string) => path.startsWith("/history"),
+  },
+  {
     title: "Usage & Budget",
     href: "/usage",
     icon: Wallet,
@@ -67,10 +73,6 @@ const NAV_ITEMS = [
   },
 ];
 
-const PLANNED_ITEMS = [
-  { title: "Branch Memory", icon: Network },
-  { title: "History", icon: History },
-];
 
 // Organisation administration: owners and admins only (the API enforces it too).
 const ADMIN_ITEMS = [
@@ -139,22 +141,6 @@ export function AppSidebar() {
           </SidebarGroup>
         )}
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Planned</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {PLANNED_ITEMS.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton disabled tooltip={`${item.title}: coming in a later stage`}>
-                    <item.icon />
-                    <span>{item.title}</span>
-                  </SidebarMenuButton>
-                  <SidebarMenuBadge>Soon</SidebarMenuBadge>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
       <SidebarRail />
     </Sidebar>

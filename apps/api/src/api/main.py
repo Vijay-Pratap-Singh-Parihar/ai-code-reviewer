@@ -23,8 +23,10 @@ from api.routers import (
     audit,
     auth,
     branch_index,
+    branch_memory,
     github,
     health,
+    history,
     metrics,
     providers,
     repos,
@@ -99,3 +101,5 @@ app.include_router(github.router)
 app.include_router(audit.router)
 app.include_router(providers.router)
 app.include_router(usage.router)
+app.include_router(history.router)
+app.include_router(branch_memory.router)
