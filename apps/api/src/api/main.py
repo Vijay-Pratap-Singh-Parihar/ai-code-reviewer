@@ -14,6 +14,7 @@ from observability import (
 
 from api.core.config import get_settings
 from api.core.request_context import RequestContextMiddleware
+from api.core.security_headers import SecurityHeadersMiddleware
 from api.db.session import engine
 from api.routers import (
     analysis,
@@ -53,7 +54,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="revu API", version="0.1.0", lifespan=lifespan)
+# The interactive API docs are for development; production doesn't publish
+# its API surface to whoever asks.
+_docs = not settings.is_production
+app = FastAPI(
+    title="revu API",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,6 +74,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=[REQUEST_ID_HEADER],
 )
+app.add_middleware(SecurityHeadersMiddleware, hsts=settings.is_production)
 # Outermost, so the request id covers everything below it, CORS included.
 app.add_middleware(RequestContextMiddleware)
 

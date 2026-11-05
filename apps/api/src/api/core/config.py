@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Bearer token Prometheus sends to scrape GET /metrics. Unset: open
     # outside production, and the endpoint is off in production.
     metrics_token: str = ""
+    # Rate limits on sign-in, sign-up and model-spending endpoints
+    # (`api.core.rate_limit`). Leave on; the test suite turns them off.
+    revu_rate_limits: bool = True
     api_cors_origins: str = "http://localhost:3000"
 
     # The API connects as `revu_app` (no superuser, no BYPASSRLS), so

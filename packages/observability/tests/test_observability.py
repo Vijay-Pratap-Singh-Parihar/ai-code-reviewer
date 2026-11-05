@@ -114,3 +114,10 @@ def test_configuring_twice_keeps_a_single_working_handler() -> None:
         assert isinstance(handler, logging.StreamHandler) and not handler.stream.closed
     finally:
         root.handlers, root.level = before, level
+
+
+def test_library_bookkeeping_on_a_record_is_not_written() -> None:
+    record = _record("Started server process", litellm_redacted=object(), status=200)
+    line = TextFormatter().format(record)
+    assert "litellm_redacted" not in line and line.endswith("status=200")
+    assert "litellm_redacted" not in JsonFormatter("api").format(record)

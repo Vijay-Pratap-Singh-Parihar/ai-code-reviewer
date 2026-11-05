@@ -1,11 +1,14 @@
 from typing import Annotated
 
+from arq import ArqRedis
 from db.organization import User
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import rate_limit
 from api.core.config import get_settings
 from api.core.deps import CurrentUser
+from api.core.queue import get_redis_pool
 from api.db.session import get_db
 from api.schemas.auth import (
     AccessTokenResponse,
@@ -44,7 +47,12 @@ def _token_response(user: User, tokens: auth_service.TokenPair) -> AccessTokenRe
     )
 
 
-@router.post("/signup", response_model=AccessTokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/signup",
+    response_model=AccessTokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[rate_limit.per_address(rate_limit.SIGNUP)],
+)
 async def signup(
     body: SignupRequest, response: Response, db: Annotated[AsyncSession, Depends(get_db)]
 ) -> AccessTokenResponse:
@@ -64,10 +72,19 @@ async def signup(
     return _token_response(user, tokens)
 
 
-@router.post("/login", response_model=AccessTokenResponse)
+@router.post(
+    "/login",
+    response_model=AccessTokenResponse,
+    dependencies=[rate_limit.per_address(rate_limit.LOGIN_ADDRESS)],
+)
 async def login(
-    body: LoginRequest, response: Response, db: Annotated[AsyncSession, Depends(get_db)]
+    body: LoginRequest,
+    response: Response,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[ArqRedis, Depends(get_redis_pool)],
 ) -> AccessTokenResponse:
+    # Per account too, so one password isn't guessed from many addresses.
+    await rate_limit.hit(redis, rate_limit.LOGIN_EMAIL, body.email)
     try:
         user, tokens = await auth_service.authenticate(db, email=body.email, password=body.password)
     except auth_service.InvalidCredentialsError as exc:
@@ -77,7 +94,11 @@ async def login(
     return _token_response(user, tokens)
 
 
-@router.post("/refresh", response_model=AccessTokenResponse)
+@router.post(
+    "/refresh",
+    response_model=AccessTokenResponse,
+    dependencies=[rate_limit.per_address(rate_limit.REFRESH)],
+)
 async def refresh(
     response: Response,
     db: Annotated[AsyncSession, Depends(get_db)],

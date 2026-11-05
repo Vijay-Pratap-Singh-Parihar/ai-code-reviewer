@@ -1,0 +1,8 @@
+# Fake credentials that tests use on purpose (each checked by hand): a
+# made-up Groq-style key, a placeholder "sk-live-123456", and the literal
+# text "BEGIN PRIVATE KEY" in an encryption round-trip test. Add a line here
+# only after confirming a finding is not a real secret.
+f018b6574b2e5f2a3446a2d0f3c74bb3358a11a1:apps/api/tests/test_providers.py:generic-api-key:24
+f018b6574b2e5f2a3446a2d0f3c74bb3358a11a1:packages/db/tests/test_credentials_and_endpoints.py:generic-api-key:27
+f018b6574b2e5f2a3446a2d0f3c74bb3358a11a1:packages/db/tests/test_credentials_and_endpoints.py:generic-api-key:33
+23b0187be9398d9b768200bcb04386f1382a6824:packages/ghapp/tests/test_manifest_relay_crypto.py:private-key:23
