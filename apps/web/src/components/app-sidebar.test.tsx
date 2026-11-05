@@ -53,21 +53,17 @@ describe("AppSidebar", () => {
     expect(screen.getByRole("link", { name: /dashboard/i })).not.toHaveAttribute("data-active");
   });
 
-  it("renders the planned sections as disabled, non-navigating items with a Soon badge", () => {
-    pathname = "/dashboard";
+  it("links every screen, with nothing left as coming soon", () => {
+    pathname = "/history";
     renderSidebar();
 
-    for (const label of ["Branch Memory", "History"]) {
-      const button = screen.getByRole("button", { name: new RegExp(label) });
-      // The tooltip wrapper needs the button to still fire hover events, so
-      // "disabled" here renders as a data-trigger-disabled marker (styled
-      // via pointer-events-none) rather than a real native `disabled`
-      // attribute.
-      expect(button).toHaveAttribute("data-trigger-disabled");
-    }
-    expect(screen.getAllByText("Soon")).toHaveLength(2);
     expect(screen.getByRole("link", { name: /ai providers/i })).toHaveAttribute("href", "/providers");
+    expect(screen.getByRole("link", { name: /branch memory/i })).toHaveAttribute("href", "/branch-memory");
     expect(screen.getByRole("link", { name: /usage & budget/i })).toHaveAttribute("href", "/usage");
+    const history = screen.getByRole("link", { name: /history/i });
+    expect(history).toHaveAttribute("href", "/history");
+    expect(history).toHaveAttribute("data-active");
+    expect(screen.queryByText("Soon")).not.toBeInTheDocument();
   });
 
   it("shows the audit log to owners and admins only", () => {

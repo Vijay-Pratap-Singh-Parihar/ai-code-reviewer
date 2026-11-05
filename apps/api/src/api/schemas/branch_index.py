@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from db.branch_index import BranchIndexStatus, IndexUpdateMode
 from pydantic import BaseModel, Field
@@ -59,3 +60,34 @@ class BranchIndexStatusPublic(BaseModel):
     latest_attempt_id: uuid.UUID | None
     last_update: IndexUpdateLogPublic | None
     recent_updates: list[IndexUpdateLogPublic] = Field(default_factory=list)
+
+
+class BranchMemoryRow(BaseModel):
+    """One branch on the Branch Memory screen: what reviews read for it now,
+    how it got there, and what keeping it fresh has cost lately."""
+
+    repo_id: uuid.UUID
+    repo_full_name: str
+    # Disconnected repositories keep their indexes but can't be rebuilt.
+    repo_active: bool
+    branch_name: str
+    is_default_branch: bool
+    # ready: the latest build is in use. building: a build is queued or
+    # running (an older ready index, if any, is still in use). failed: the
+    # latest build failed (likewise). not_indexed: never built.
+    state: Literal["ready", "building", "failed", "not_indexed"]
+    has_ready_index: bool
+    head_sha: str | None
+    node_count: int
+    edge_count: int
+    unresolved_count: int
+    # The stored list is capped, so a count at the cap means "at least".
+    unresolved_capped: bool
+    # Unresolved references as a share of all references found (resolved
+    # edges plus unresolved); None without a ready index.
+    unresolved_rate: float | None
+    build_duration_ms: int | None
+    built_at: datetime | None
+    last_update: IndexUpdateLogPublic | None
+    full_rebuilds_30d: int
+    incremental_updates_30d: int
