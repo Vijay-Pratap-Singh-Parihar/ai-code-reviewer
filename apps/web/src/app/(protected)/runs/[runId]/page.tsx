@@ -118,7 +118,7 @@ export default function RunPage() {
 
       <div className="flex flex-col gap-2">
         <h2 className="text-sm font-semibold text-muted-foreground">Findings &amp; evidence trail</h2>
-        <EvidenceTrail findings={data?.findings ?? []} />
+        <EvidenceTrail findings={data?.findings ?? []} runId={runId} />
       </div>
     </div>
   );

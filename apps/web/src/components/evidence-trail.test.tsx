@@ -12,6 +12,7 @@ describe("EvidenceTrail", () => {
   it("renders a finding's evidence trail, including evidence from files outside the diff", () => {
     const findings: FindingPublic[] = [
       {
+        id: "f2",
         file_path: "app.py",
         line_start: 2,
         line_end: 2,
@@ -41,6 +42,7 @@ describe("EvidenceTrail", () => {
   it("omits the evidence section for a finding with no evidence", () => {
     const findings: FindingPublic[] = [
       {
+        id: "f4",
         file_path: "app.py",
         line_start: 1,
         line_end: 1,

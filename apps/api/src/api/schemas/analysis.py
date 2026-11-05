@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from db.pull_request import AnalysisRunStatus
+from db.pull_request import AnalysisRunStatus, DeveloperAction, DismissReason
 from pydantic import BaseModel, Field
 from revu.models import EvidenceItem, FindingCategory, Severity
 
@@ -38,6 +38,7 @@ class FindingPublic(BaseModel):
     renaming the column to match the API, since nothing else reads it.
     """
 
+    id: uuid.UUID
     file_path: str
     line_start: int
     line_end: int
@@ -47,6 +48,10 @@ class FindingPublic(BaseModel):
     confidence: float
     agent_name: str
     evidence: list[EvidenceItem] = Field(default_factory=list, validation_alias="evidence_json")
+    # Developer feedback: accepted or dismissed (and why), and when.
+    developer_action: DeveloperAction | None = None
+    feedback_reason: DismissReason | None = None
+    feedback_at: datetime | None = Field(default=None, validation_alias="resolved_at")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -80,3 +85,13 @@ class AnalysisRunPublic(BaseModel):
     notices: list[str] = Field(default_factory=list)
     # The failed run this one retries, when it is a retry.
     retry_of: uuid.UUID | None = None
+
+
+class FindingFeedback(BaseModel):
+    """Accept or dismiss a finding; `action: null` clears earlier feedback.
+    A reason is only kept for a dismissal."""
+
+    model_config = {"extra": "forbid"}
+
+    action: Literal["accepted", "dismissed"] | None
+    reason: DismissReason | None = None
