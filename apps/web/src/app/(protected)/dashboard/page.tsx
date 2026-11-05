@@ -5,6 +5,7 @@ import { ChevronRight } from "lucide-react";
 import { TriggerAnalysisForm } from "@/components/trigger-analysis-form";
 import { RunStatusCard } from "@/components/run-status-card";
 import { AnalyticsWidgets } from "@/components/analytics-widgets";
+import { DashboardOverview } from "@/components/dashboard-overview";
 import { RepositoryList } from "@/components/repository-list";
 import { BudgetBanner } from "@/components/usage/budget-status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +24,7 @@ export default function DashboardPage() {
 
       <BudgetBanner />
 
-      <AnalyticsWidgets runIds={runIds} />
+      <DashboardOverview />
 
       <Card>
         <CardHeader>
@@ -57,6 +58,7 @@ export default function DashboardPage() {
       {runIds.length > 0 && (
         <div className="flex flex-col gap-3">
           <h2 className="text-sm font-semibold text-muted-foreground">Runs this session</h2>
+          <AnalyticsWidgets runIds={runIds} />
           {runIds.map((runId) => (
             <RunStatusCard key={runId} runId={runId} />
           ))}

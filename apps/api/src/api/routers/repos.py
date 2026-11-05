@@ -12,6 +12,7 @@ from db.pull_request import AnalysisRun, PullRequest
 from db.repository import Repository
 from fastapi import APIRouter, Depends, HTTPException, status
 from ghapp import GitHubError
+from revu.review_settings import ReviewSettings
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,6 +57,7 @@ def _to_public(repo: Repository) -> RepositoryPublic:
         installation_id=repo.installation_id,
         disconnected_at=repo.disconnected_at,
         purge_after=lifecycle.purge_after(repo.disconnected_at),
+        review_settings=ReviewSettings.from_config(repo.config_json),
     )
 
 
@@ -97,16 +99,25 @@ async def update_repository(
     """Repository settings change what runs (and what is billed) for the
     whole organisation, so they are an owner/admin decision."""
     repo = await _require_repo(db, repo_id, user.org_id)
-    if repo.auto_review_enabled != body.auto_review_enabled:
+    changes: dict[str, object] = {}
+    wanted = body.auto_review_enabled
+    if wanted is not None and repo.auto_review_enabled != wanted:
+        repo.auto_review_enabled = wanted
+        changes["auto_review_enabled"] = wanted
+    new_settings = body.review_settings
+    if new_settings is not None and new_settings != ReviewSettings.from_config(repo.config_json):
+        stored = new_settings.model_dump(mode="json")
+        repo.config_json = {**(repo.config_json or {}), "review": stored}
+        changes["review_settings"] = stored
+    if changes:
         record_audit(
             db,
             org_id=repo.org_id,
             actor_id=user.id,
             action=AuditAction.REPOSITORY_SETTINGS_CHANGED,
             target=f"repository:{repo.full_name}",
-            metadata={"auto_review_enabled": body.auto_review_enabled},
+            metadata=changes,
         )
-    repo.auto_review_enabled = body.auto_review_enabled
     await db.commit()
     return _to_public(repo)
 

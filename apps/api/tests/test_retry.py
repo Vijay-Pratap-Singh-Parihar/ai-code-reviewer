@@ -164,3 +164,38 @@ async def test_a_github_review_is_retried_through_the_github_job(
     assert retry["retry_of"] == run_id
     enqueued = api_client.fake_redis_pool.enqueued  # type: ignore[attr-defined]
     assert [name for name, _ in enqueued] == ["review_github_pr"]
+
+
+async def test_run_anyway_retries_a_review_stopped_at_the_token_ceiling(
+    api_client: AsyncClient,
+) -> None:
+    token, run_id = await _queued_run(api_client, "ceiling@example.com")
+    await _edit_run(
+        token,
+        run_id,
+        status=AnalysisRunStatus.FAILED,
+        error="This review would use about 90,000 tokens, over this repository's limit.",
+        estimated_tokens=90000,
+        config_snapshot={"over_ceiling": {"estimate": 90000, "ceiling": 50000}},
+    )
+    stopped = (await api_client.get(f"/analysis/{run_id}", headers=_auth_header(token))).json()
+    assert stopped["over_ceiling"] is True and stopped["estimated_tokens"] == 90000
+
+    response = await api_client.post(
+        f"/analysis/{run_id}/retry", json={"allow_over_ceiling": True}, headers=_auth_header(token)
+    )
+
+    assert response.status_code == 202, response.text
+    session_dep = app.dependency_overrides[get_db]
+    async for session in session_dep():
+        await bind_org(session, decode_access_token(token).org_id)
+        retry = await session.get(AnalysisRun, uuid.UUID(response.json()["id"]))
+        assert retry is not None and retry.config_snapshot["allow_over_ceiling"] is True
+        await session.commit()
+        break
+    # A plain retry (no body) still works and doesn't override.
+    await _fail(token, response.json()["id"])
+    plain = await api_client.post(
+        f"/analysis/{response.json()['id']}/retry", headers=_auth_header(token)
+    )
+    assert plain.status_code == 202

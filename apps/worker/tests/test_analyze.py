@@ -716,8 +716,14 @@ async def test_review_outcomes_tokens_and_cost_reach_the_metrics(
 ) -> None:
     run, _repo = await _make_run(worker_db_session)
     finding = Finding(
-        file_path="a.py", line_start=1, line_end=1, category=FindingCategory.CORRECTNESS,
-        severity=Severity.CRITICAL, message="bug", evidence=[], confidence=0.9,
+        file_path="a.py",
+        line_start=1,
+        line_end=1,
+        category=FindingCategory.CORRECTNESS,
+        severity=Severity.CRITICAL,
+        message="bug",
+        evidence=[],
+        confidence=0.9,
         agent_name="diff_only",
     )
 
@@ -739,9 +745,7 @@ async def test_review_outcomes_tokens_and_cost_reach_the_metrics(
     assert _sample("revu_reviews_total", agent="diff_only", outcome="succeeded") == before["ok"] + 1
     assert _sample("revu_review_tokens_total", direction="in") == before["in"] + 100
     assert _sample("revu_review_cost_usd_total") == pytest.approx(before["cost"] + 0.5)
-    assert (
-        _sample("revu_review_findings_total", severity="critical") == before["critical"] + 1
-    )
+    assert _sample("revu_review_findings_total", severity="critical") == before["critical"] + 1
 
 
 async def test_a_failed_and_a_retried_review_are_counted_apart(
@@ -850,11 +854,111 @@ async def test_a_blast_radius_failure_does_not_fail_the_review(
     monkeypatch.setattr(analyze, "review_cross_file", fake_review_cross_file)
 
     await analyze.execute_review(
-        worker_db_session, run, repo=repo, pr_title="t", pr_body="b", diff="d",
-        agent="cross_file", repo_path="/tmp/acme-widgets", storage=tenant_storage,
+        worker_db_session,
+        run,
+        repo=repo,
+        pr_title="t",
+        pr_body="b",
+        diff="d",
+        agent="cross_file",
+        repo_path="/tmp/acme-widgets",
+        storage=tenant_storage,
         provider_access=TEST_ACCESS,
     )
 
     await worker_db_session.refresh(run)
     assert run.status == AnalysisRunStatus.SUCCEEDED
     assert run.blast_radius is None
+
+
+async def test_repository_settings_shape_the_review(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ignored files never reach the model, the estimate is recorded, and the
+    findings are cut to the minimum severity and the comment limit."""
+    run, repo = await _make_run(worker_db_session)
+    repo.config_json = {
+        "review": {"ignore_globs": ["docs/**"], "min_severity": "medium", "max_comments": 1}
+    }
+    run.diff_text = (
+        "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-a\n+b\n"
+        "diff --git a/docs/x.md b/docs/x.md\n--- a/docs/x.md\n+++ b/docs/x.md\n"
+        "@@ -1 +1 @@\n-a\n+b\n"
+    )
+    await worker_db_session.commit()
+    seen: dict[str, str] = {}
+
+    def finding(severity: Severity, line: int) -> Finding:
+        return Finding(
+            file_path="app.py",
+            line_start=line,
+            line_end=line,
+            category=FindingCategory.CORRECTNESS,
+            severity=severity,
+            message="m",
+            confidence=0.7,
+            agent_name="diff_only",
+        )
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        seen["diff"] = str(kwargs["diff"])
+        return RunResult(
+            findings=[
+                finding(Severity.LOW, 1),
+                finding(Severity.HIGH, 2),
+                finding(Severity.MEDIUM, 3),
+            ]
+        )
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert "docs/x.md" not in seen["diff"] and "app.py" in seen["diff"]
+    assert run.status == AnalysisRunStatus.SUCCEEDED
+    assert run.estimated_tokens and run.estimated_tokens > 0
+    assert run.config_snapshot["ignored_files"] == ["docs/x.md"]
+    assert (
+        run.config_snapshot["hidden_below_threshold"],
+        run.config_snapshot["hidden_over_cap"],
+    ) == (1, 1)
+    kept = (
+        await worker_db_session.scalars(select(FindingRecord).where(FindingRecord.run_id == run.id))
+    ).all()
+    assert [f.line_start for f in kept] == [2]
+
+
+async def test_a_review_over_the_token_ceiling_stops_before_the_model(
+    worker_db_session: AsyncSession, worker_ctx: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run, repo = await _make_run(worker_db_session)
+    repo.config_json = {"review": {"max_tokens_per_review": 1000}}
+    run.diff_text = "".join(
+        f"diff --git a/m{i}.py b/m{i}.py\n--- a/m{i}.py\n+++ b/m{i}.py\n@@ -1 +1 @@\n-a\n"
+        f"+{'value = compute(value) ' * 30}\n"
+        for i in range(20)
+    )
+    await worker_db_session.commit()
+    called = False
+
+    async def fake_review_diff(**kwargs: object) -> RunResult:
+        nonlocal called
+        called = True
+        return RunResult(findings=[])
+
+    monkeypatch.setattr(analyze, "review_diff", fake_review_diff)
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+
+    await worker_db_session.refresh(run)
+    assert not called
+    assert run.status == AnalysisRunStatus.FAILED
+    assert "limit of 1,000 per review" in (run.error or "")
+    assert run.config_snapshot["over_ceiling"]["ceiling"] == 1000
+
+    # "Run anyway": the same review with the override goes ahead.
+    run.status = AnalysisRunStatus.QUEUED
+    run.config_snapshot = {**run.config_snapshot, "allow_over_ceiling": True}
+    await worker_db_session.commit()
+    await analyze.analyze_pr(worker_ctx, str(run.id), str(run.org_id))
+    await worker_db_session.refresh(run)
+    assert called and run.status == AnalysisRunStatus.SUCCEEDED

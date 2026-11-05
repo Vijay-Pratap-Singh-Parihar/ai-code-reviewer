@@ -33,7 +33,12 @@ class RetryRefused(Exception):
 
 
 async def retry_run(
-    session: AsyncSession, redis: ArqRedis, *, run: AnalysisRun, user: User
+    session: AsyncSession,
+    redis: ArqRedis,
+    *,
+    run: AnalysisRun,
+    user: User,
+    allow_over_ceiling: bool = False,
 ) -> AnalysisRun:
     """Queue a new run retrying `run`, a failed run the caller's
     organisation owns (the caller loads it with `get_run_for_org`).
@@ -69,6 +74,7 @@ async def retry_run(
             actor_id=user.id,
             repo_full_name=repo.full_name,
             retry_of=run.id,
+            allow_over_ceiling=allow_over_ceiling,
         )
 
     # A pasted diff: review the same diff again.
@@ -85,6 +91,7 @@ async def retry_run(
             "head_sha": run.config_snapshot.get("head_sha") or pr.head_sha,
             "source": "manual",
             "retry_of": str(run.id),
+            **({"allow_over_ceiling": True} if allow_over_ceiling else {}),
         },
         status=AnalysisRunStatus.QUEUED,
         diff_text=run.diff_text,

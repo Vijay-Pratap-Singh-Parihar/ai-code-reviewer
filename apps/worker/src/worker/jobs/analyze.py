@@ -20,6 +20,12 @@ from revu.context.impact import blast_radius
 from revu.index.store import load_graph
 from revu.models import Finding, RunResult
 from revu.providers.llm import ModelEndpoint, describe_error, is_transient
+from revu.review_settings import (
+    ReviewSettings,
+    apply_output_limits,
+    drop_ignored,
+    estimate_review_tokens,
+)
 from revu.verify import verify_findings
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,6 +122,34 @@ def _record_usage(run: AnalysisRun, result: RunResult) -> None:
 
 
 
+class OverCeilingError(Exception):
+    """The review's estimated tokens exceed the repository's ceiling and
+    nobody confirmed running it anyway."""
+
+
+def _prepare_diff(run: AnalysisRun, diff: str, settings: ReviewSettings) -> str:
+    """Apply the repository's ignore patterns, estimate the review's tokens
+    before any model call, and stop at the token ceiling unless the run was
+    confirmed ("Run anyway")."""
+    ignored = drop_ignored(diff, settings.ignore_globs)
+    estimate = estimate_review_tokens(ignored.diff)
+    run.estimated_tokens = estimate
+    if ignored.ignored:
+        run.config_snapshot = {**run.config_snapshot, "ignored_files": ignored.ignored}
+    ceiling = settings.max_tokens_per_review
+    if ceiling and estimate > ceiling and not run.config_snapshot.get("allow_over_ceiling"):
+        run.config_snapshot = {
+            **run.config_snapshot,
+            "over_ceiling": {"estimate": estimate, "ceiling": ceiling},
+        }
+        raise OverCeilingError(
+            f"This review would use about {estimate:,} tokens, over this repository's limit of "
+            f"{ceiling:,} per review. Nothing was sent to the model. Use \"Run anyway\" to "
+            "review it, or raise the limit in the repository's settings."
+        )
+    return ignored.diff
+
+
 async def execute_review(
     session: AsyncSession,
     run: AnalysisRun,
@@ -140,10 +174,19 @@ async def execute_review(
     job's time limit, or the worker shutting down), the run is marked failed
     with that reason rather than left "running".
     """
+    settings = ReviewSettings.from_config(repo.config_json)
     try:
         # A run queued before the month's cap was reached doesn't start once
         # it is (see `db.usage`).
         await ensure_within_budget(session, run.org_id)
+        diff = _prepare_diff(run, diff, settings)
+        if not diff.strip():
+            # Every changed file is ignored by the repository's settings.
+            run.status = AnalysisRunStatus.SUCCEEDED
+            run.finished_at = datetime.now(UTC)
+            record_run_usage(session, run)
+            await session.commit()
+            return
         model = await endpoint_for_run(session, run, provider_access)
         if agent == "cross_file" and not model.supports_tools:
             # The cross-file agent works by calling tools; a model that can't
@@ -177,6 +220,11 @@ async def execute_review(
         metrics.REVIEWS.labels(agent, "over_budget").inc()
         await mark_run_failed(session, run, exc)
         return
+    except OverCeilingError as exc:
+        logger.info("review of run %s not started: over the repository's token ceiling", run.id)
+        metrics.REVIEWS.labels(agent, "over_ceiling").inc()
+        await mark_run_failed(session, run, exc)
+        return
     except Exception as exc:
         if is_transient(exc) and attempt < REVIEW_MAX_TRIES:
             wait_s = RETRY_BASE_S * 2 ** (attempt - 1)
@@ -190,6 +238,16 @@ async def execute_review(
         metrics.REVIEWS.labels(agent, "failed").inc()
         await mark_run_failed(session, run, exc)
         return
+
+    limits = apply_output_limits(findings, settings)
+    findings = limits.findings
+    if limits.below_threshold or limits.over_cap:
+        run.config_snapshot = {
+            **run.config_snapshot,
+            "hidden_below_threshold": limits.below_threshold,
+            "hidden_over_cap": limits.over_cap,
+            "min_severity": str(settings.min_severity),
+        }
 
     for finding in findings:
         session.add(
