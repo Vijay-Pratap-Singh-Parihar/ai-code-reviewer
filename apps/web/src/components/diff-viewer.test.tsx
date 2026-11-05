@@ -23,6 +23,7 @@ index 3333333..4444444 100644
 
 function finding(overrides: Partial<FindingPublic>): FindingPublic {
   return {
+    id: "f1",
     file_path: "a.py",
     line_start: 1,
     line_end: 1,

@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator, Iterator
 import db as _db_models  # noqa: F401  (registers all models on Base.metadata)
 import pytest
 import pytest_asyncio
+from api.core.config import get_settings
 from api.core.queue import get_redis_pool
 from api.db.session import get_db
 from api.main import app
@@ -34,6 +35,13 @@ class FakeRedisPool:
 
     async def enqueue_job(self, function: str, *args: object, **kwargs: object) -> None:
         self.enqueued.append((function, args))
+
+
+@pytest.fixture(autouse=True)
+def _no_rate_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most tests sign up and log in far more often than a person would;
+    `test_rate_limit.py` turns the limits back on for itself."""
+    monkeypatch.setattr(get_settings(), "revu_rate_limits", False)
 
 
 @pytest.fixture(scope="session")

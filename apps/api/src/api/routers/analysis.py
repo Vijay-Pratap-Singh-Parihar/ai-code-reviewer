@@ -5,12 +5,19 @@ from db.pull_request import AnalysisRun, AnalysisRunStatus, FindingRecord, PullR
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import rate_limit
 from api.core.deps import CurrentUser, RedisPool
 from api.core.queue import enqueue
 from api.db.session import get_db
-from api.schemas.analysis import AnalysisRequest, AnalysisRunPublic, FindingPublic
+from api.schemas.analysis import (
+    AnalysisRequest,
+    AnalysisRunPublic,
+    FindingFeedback,
+    FindingPublic,
+)
 from api.services import analysis as analysis_service
 from api.services.providers import NO_REVIEW_MODEL, NoModelRouteError
+from api.services.retry import RetryRefused, retry_run
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
 
@@ -39,10 +46,23 @@ def _to_public(
         posted_at=run.posted_at,
         post_error=run.post_error,
         notices=analysis_service.run_notices(run.config_snapshot),
+        retry_of=_uuid_or_none(run.config_snapshot.get("retry_of")),
     )
 
 
-@router.post("", response_model=AnalysisRunPublic, status_code=status.HTTP_202_ACCEPTED)
+def _uuid_or_none(value: object) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except ValueError:
+        return None
+
+
+@router.post(
+    "",
+    response_model=AnalysisRunPublic,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limit.per_user(rate_limit.REVIEW)],
+)
 async def trigger_analysis(
     body: AnalysisRequest,
     user: CurrentUser,
@@ -80,6 +100,26 @@ async def get_analysis(
     return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)
 
 
+@router.put("/{run_id}/findings/{finding_id}/feedback", response_model=FindingPublic)
+async def give_feedback(
+    run_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    body: FindingFeedback,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> FindingPublic:
+    """Record whether a finding was useful. Anyone in the organisation can
+    give feedback; the latest feedback replaces earlier feedback."""
+    run = await analysis_service.get_run_for_org(db, run_id=run_id, org_id=user.org_id)
+    finding = next((f for f in run.findings if f.id == finding_id), None) if run else None
+    if finding is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "finding not found")
+    analysis_service.set_feedback(finding, body=body, user=user)
+    await db.commit()
+    await db.refresh(finding)
+    return FindingPublic.model_validate(finding)
+
+
 @router.post(
     "/{run_id}/github-review",
     response_model=AnalysisRunPublic,
@@ -106,3 +146,32 @@ async def post_to_github(
         await enqueue(redis, "post_github_review", str(run.id), str(run.org_id), str(user.id))
     pr = run.pull_request
     return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)
+
+
+@router.post(
+    "/{run_id}/retry",
+    response_model=AnalysisRunPublic,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limit.per_user(rate_limit.REVIEW)],
+)
+async def retry_analysis(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: RedisPool,
+) -> AnalysisRunPublic:
+    """Queue a new run of a failed review (same pull request, same reviewer,
+    the organisation's model as configured now). Answers with the new run;
+    the failed one is kept as it was."""
+    run = await analysis_service.get_run_for_org(db, run_id=run_id, org_id=user.org_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "analysis run not found")
+    pr = run.pull_request
+    repo_full_name = pr.repository.full_name
+    try:
+        retry = await retry_run(db, redis, run=run, user=user)
+    except RetryRefused as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except NoModelRouteError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, NO_REVIEW_MODEL) from exc
+    return _to_public(retry, findings=[], pr=pr, repo_full_name=repo_full_name)

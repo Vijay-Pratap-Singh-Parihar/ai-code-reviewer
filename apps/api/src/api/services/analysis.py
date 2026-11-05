@@ -5,13 +5,21 @@ from typing import Any
 
 from db.organization import User
 from db.provider import ModelTier
-from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
+from db.pull_request import (
+    AnalysisRun,
+    AnalysisRunStatus,
+    DeveloperAction,
+    FindingRecord,
+    PullRequest,
+    PullRequestState,
+)
 from db.repository import Repository
+from db.usage import ensure_within_budget
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from api.schemas.analysis import AnalysisRequest
+from api.schemas.analysis import AnalysisRequest, FindingFeedback
 from api.services.providers import route_snapshot
 from api.services.repositories import get_or_create_repository
 
@@ -19,6 +27,7 @@ __all__ = [
     "create_analysis_run",
     "get_run_for_org",
     "run_notices",
+    "set_feedback",
 ]
 
 _SHOWN_SKIPPED = 3
@@ -101,8 +110,10 @@ async def _get_or_create_pull_request(
 async def create_analysis_run(
     session: AsyncSession, *, user: User, body: AnalysisRequest
 ) -> AnalysisRun:
-    # Fails (NoModelRouteError) before anything is written when the
-    # organisation hasn't chosen a review model yet.
+    # Fails before anything is written when the organisation hasn't chosen a
+    # review model yet (NoModelRouteError) or has reached its monthly budget
+    # (BudgetExceededError).
+    await ensure_within_budget(session, user.org_id)
     model = await route_snapshot(session, user.org_id, ModelTier.REVIEW)
     repo = await get_or_create_repository(
         session, org_id=user.org_id, full_name=body.repo_full_name
@@ -147,3 +158,18 @@ async def get_run_for_org(
     )
     result: AnalysisRun | None = await session.scalar(stmt)
     return result
+
+
+def set_feedback(finding: FindingRecord, *, body: FindingFeedback, user: User) -> None:
+    """Apply a developer's feedback to a finding (the caller commits)."""
+    if body.action is None:
+        finding.developer_action = None
+        finding.feedback_reason = None
+        finding.resolved_at = None
+        finding.feedback_by = None
+        return
+    finding.developer_action = DeveloperAction(body.action)
+    dismissed = finding.developer_action == DeveloperAction.DISMISSED
+    finding.feedback_reason = str(body.reason) if dismissed and body.reason else None
+    finding.resolved_at = datetime.now(UTC)
+    finding.feedback_by = user.id

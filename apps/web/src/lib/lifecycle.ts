@@ -40,6 +40,7 @@ export const AUDIT_ACTION_LABEL: Record<string, string> = {
   "ai_provider.deleted": "AI provider deleted",
   "ai_provider.tested": "AI provider tested",
   "model_routes.changed": "Review models changed",
+  "budget.changed": "Budget changed",
 };
 
 export function auditActionLabel(action: string): string {

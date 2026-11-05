@@ -43,6 +43,7 @@ from db.provider import ModelRoute, ModelTier
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
 from db.repository import Repository
 from db.tenancy import bind_org
+from db.usage import BudgetExceededError, ensure_within_budget
 from ghapp import GitHubClient
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -355,8 +356,13 @@ async def queue_github_review(
     branch_index_id: uuid.UUID | None = None,
     actor_id: uuid.UUID | None = None,
     repo_full_name: str = "",
+    retry_of: uuid.UUID | None = None,
 ) -> AnalysisRun:
+    """Raises BudgetExceededError (nothing written) once the organisation's
+    monthly cap is reached, and NoModelRouteError without a review model."""
+    await ensure_within_budget(session, pr.org_id)
     model = await route_snapshot(session, pr.org_id, ModelTier.REVIEW)
+    extra = {"retry_of": str(retry_of)} if retry_of else {}
     run = AnalysisRun(
         pr_id=pr.id,
         org_id=pr.org_id,
@@ -367,6 +373,7 @@ async def queue_github_review(
             "head_sha": pr.head_sha,
             "trigger": trigger,
             "source": "github",
+            **extra,
         },
         status=AnalysisRunStatus.QUEUED,
         # Python-side, like BranchIndex.created_at: Postgres now() is
@@ -381,7 +388,7 @@ async def queue_github_review(
         actor_id=actor_id,
         action=AuditAction.REVIEW_REQUESTED,
         target=f"pull_request:{repo_full_name}#{pr.number}",
-        metadata={"run_id": str(run.id), "agent": agent, "trigger": trigger},
+        metadata={"run_id": str(run.id), "agent": agent, "trigger": trigger, **extra},
     )
     await session.commit()
     await enqueue(redis, "review_github_pr", str(run.id), str(run.org_id))
@@ -437,6 +444,11 @@ async def _handle_pull_request(
     if not await has_review_route(session, pr.org_id):
         await session.commit()
         return WebhookOutcome("processed", "no AI provider is configured for reviews")
+    try:
+        await ensure_within_budget(session, pr.org_id)
+    except BudgetExceededError:
+        await session.commit()
+        return WebhookOutcome("processed", "the monthly budget is reached; not auto-reviewed")
 
     # Auto-review always uses the cheaper diff-only reviewer; the deeper
     # cross-file review is an explicit, per-PR choice in the UI.

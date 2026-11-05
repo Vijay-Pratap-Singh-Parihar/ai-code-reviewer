@@ -167,7 +167,11 @@ export type EvidenceItem = {
   reason: string;
 };
 
+export type DeveloperAction = "accepted" | "dismissed" | "ignored";
+export type DismissReason = "incorrect" | "not_important" | "already_handled" | "other";
+
 export type FindingPublic = {
+  id: string;
   file_path: string;
   line_start: number;
   line_end: number;
@@ -177,7 +181,22 @@ export type FindingPublic = {
   confidence: number;
   agent_name: string;
   evidence: EvidenceItem[];
+  /** Developer feedback from the run page. */
+  developer_action?: DeveloperAction | null;
+  feedback_reason?: DismissReason | null;
+  feedback_at?: string | null;
 };
+
+export function giveFindingFeedback(
+  runId: string,
+  findingId: string,
+  body: { action: "accepted" | "dismissed" | null; reason?: DismissReason | null },
+): Promise<FindingPublic> {
+  return apiFetchJson<FindingPublic>(`/analysis/${runId}/findings/${findingId}/feedback`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
 
 export type AnalysisRunStatus = "queued" | "running" | "succeeded" | "failed";
 
@@ -206,7 +225,14 @@ export type AnalysisRunPublic = {
   post_error?: string | null;
   /** How the review went: files left out, parts, a model that stopped short. */
   notices?: string[];
+  /** The failed run this one retries, when it is a retry. */
+  retry_of?: string | null;
 };
+
+/** Run a failed review again as a new run; answers with the new run. */
+export function retryAnalysis(runId: string): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}/retry`, { method: "POST" });
+}
 
 /** Queue posting a finished PR review to GitHub; a no-op once it is posted. */
 export function postReviewToGitHub(runId: string): Promise<AnalysisRunPublic> {
@@ -445,6 +471,157 @@ export function indexRepository(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+// --- Usage & Budget ----------------------------------------------------------
+
+export type BudgetStatus = "ok" | "warning" | "exceeded";
+
+export type Budget = {
+  /** null: no cap of that kind. */
+  monthly_budget_usd: number | null;
+  token_cap: number | null;
+  warn_percent: number;
+};
+
+export type UsageTotals = { cost_usd: number; tokens: number; runs: number };
+
+export type Usage = {
+  period_start: string;
+  resets_at: string;
+  spent_usd: number;
+  tokens: number;
+  runs: number;
+  budget: Budget;
+  /** Of whichever cap is closer to being reached; null without a cap. */
+  used_percent: number | null;
+  status: BudgetStatus;
+  daily: (UsageTotals & { day: string })[];
+  months: (UsageTotals & { month: string })[];
+  by_repo: (UsageTotals & { repo_full_name: string })[];
+  by_model: (UsageTotals & { provider_name: string; model: string })[];
+};
+
+export function getUsage(): Promise<Usage> {
+  return apiFetchJson<Usage>("/usage");
+}
+
+export function setBudget(body: {
+  monthly_budget_usd: string | null;
+  token_cap: number | null;
+  warn_percent: number;
+}): Promise<Budget> {
+  return apiFetchJson<Budget>("/usage/budget", { method: "PUT", body: JSON.stringify(body) });
+}
+
+// --- History -----------------------------------------------------------------
+
+export type Severity = "low" | "medium" | "high" | "critical";
+export type PullRequestState = "open" | "closed" | "merged";
+
+export type HistoryRun = {
+  id: string;
+  created_at: string;
+  finished_at: string | null;
+  status: AnalysisRunStatus;
+  agent: string | null;
+  model: string | null;
+  source: string | null;
+  trigger: string | null;
+  repo_id: string;
+  repo_full_name: string;
+  pr_number: number;
+  pr_title: string;
+  pr_state: PullRequestState;
+  findings: number;
+  severities: Partial<Record<Severity, number>>;
+  cost_usd: number;
+  tokens: number;
+  github_review_url: string | null;
+  error: string | null;
+};
+
+export type HistoryPage = { runs: HistoryRun[]; next_before: string | null };
+
+export type HistoryFilters = {
+  repo_id?: string | null;
+  /** Runs with a finding at this severity or above. */
+  severity?: Severity | null;
+  outcome?: AnalysisRunStatus | null;
+  pr_state?: PullRequestState | null;
+};
+
+function query(params: Record<string, string | number | null | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+  }
+  return search.size ? `?${search.toString()}` : "";
+}
+
+export function listHistory(
+  filters: HistoryFilters & { before?: string | null; limit?: number },
+): Promise<HistoryPage> {
+  return apiFetchJson<HistoryPage>(`/history${query(filters)}`);
+}
+
+export type AdoptionStats = {
+  runs: number;
+  succeeded: number;
+  failed: number;
+  in_progress: number;
+  pull_requests: number;
+  merged_pull_requests: number;
+  posted_to_github: number;
+  findings: number;
+  by_severity: Partial<Record<Severity, number>>;
+  accepted: number;
+  dismissed: number;
+  ignored: number;
+  no_feedback: number;
+  /** accepted / (accepted + dismissed); null before any feedback. */
+  acceptance_rate: number | null;
+};
+
+export function getAdoptionStats(repoId?: string | null): Promise<AdoptionStats> {
+  return apiFetchJson<AdoptionStats>(`/history/stats${query({ repo_id: repoId })}`);
+}
+
+// --- Branch Memory -----------------------------------------------------------
+
+export type IndexUpdateLog = {
+  mode: "incremental" | "full";
+  from_sha: string | null;
+  to_sha: string;
+  files_changed: number;
+  duration_ms: number;
+  reason: string | null;
+  created_at: string;
+};
+
+export type BranchMemoryRow = {
+  repo_id: string;
+  repo_full_name: string;
+  repo_active: boolean;
+  branch_name: string;
+  is_default_branch: boolean;
+  state: "ready" | "building" | "failed" | "not_indexed";
+  has_ready_index: boolean;
+  head_sha: string | null;
+  node_count: number;
+  edge_count: number;
+  unresolved_count: number;
+  unresolved_capped: boolean;
+  unresolved_rate: number | null;
+  build_duration_ms: number | null;
+  built_at: string | null;
+  last_update: IndexUpdateLog | null;
+  full_rebuilds_30d: number;
+  incremental_updates_30d: number;
+};
+
+export function getBranchMemory(): Promise<BranchMemoryRow[]> {
+  return apiFetchJson<BranchMemoryRow[]>("/branch-memory");
 }
 
 /** Renders an `ApiError` (or any thrown value) as one user-facing line. */

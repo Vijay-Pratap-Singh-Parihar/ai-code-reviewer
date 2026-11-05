@@ -1,9 +1,12 @@
 [project]
 name = "observability"
 version = "0.1.0"
-description = "Logging, request ids and (later) metrics shared by apps/api and apps/worker"
+description = "Logging, request ids, metrics and error reporting shared by apps/api and apps/worker"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "prometheus-client>=0.20",
+    "sentry-sdk>=2.20",
+]
 
 [build-system]
 requires = ["hatchling"]

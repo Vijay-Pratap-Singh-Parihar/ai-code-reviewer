@@ -24,6 +24,16 @@ class Settings(BaseSettings):
     # "json" (one object per line, for a log pipeline) or "text"; unset =
     # json in production, text elsewhere.
     log_format: Literal["json", "text"] | None = None
+    # Error reporting (Sentry or a self-hosted GlitchTip); off when empty.
+    sentry_dsn: str = ""
+    # Share of requests also sent as performance traces (0 = errors only).
+    sentry_traces_sample_rate: float = 0.0
+    # Bearer token Prometheus sends to scrape GET /metrics. Unset: open
+    # outside production, and the endpoint is off in production.
+    metrics_token: str = ""
+    # Rate limits on sign-in, sign-up and model-spending endpoints
+    # (`api.core.rate_limit`). Leave on; the test suite turns them off.
+    revu_rate_limits: bool = True
     api_cors_origins: str = "http://localhost:3000"
 
     # The API connects as `revu_app` (no superuser, no BYPASSRLS), so

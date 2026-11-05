@@ -1,4 +1,5 @@
-"""Logging and request ids shared by the API and the worker."""
+"""Logging, request ids, metrics and error reporting shared by the API and
+the worker."""
 
 from observability.context import (
     REQUEST_ID_HEADER,
@@ -9,6 +10,7 @@ from observability.context import (
     new_request_id,
     request_id,
 )
+from observability.errors import init_error_reporting
 from observability.logs import configure_logging, default_format, redact
 
 __all__ = [
@@ -19,6 +21,7 @@ __all__ = [
     "configure_logging",
     "current_fields",
     "default_format",
+    "init_error_reporting",
     "new_request_id",
     "redact",
     "request_id",

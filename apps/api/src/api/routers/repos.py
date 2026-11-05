@@ -15,6 +15,7 @@ from ghapp import GitHubError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.core import rate_limit
 from api.core.deps import CurrentUser, OrgAdmin, RedisPool
 from api.core.github import GitHub
 from api.db.session import get_db
@@ -182,6 +183,7 @@ async def list_pull_requests(
     "/{repo_id}/pulls/{number}/analysis",
     response_model=AnalysisRunPublic,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[rate_limit.per_user(rate_limit.REVIEW)],
 )
 async def review_pull_request(
     repo_id: uuid.UUID,

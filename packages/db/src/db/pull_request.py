@@ -44,6 +44,16 @@ class DeveloperAction(enum.StrEnum):
     IGNORED = "ignored"
 
 
+class DismissReason(enum.StrEnum):
+    """Why a finding was dismissed: a false positive (`incorrect`) is a
+    different failure from a true but unhelpful finding (`not_important`)."""
+
+    INCORRECT = "incorrect"
+    NOT_IMPORTANT = "not_important"
+    ALREADY_HANDLED = "already_handled"
+    OTHER = "other"
+
+
 class PullRequest(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "pull_requests"
     # Webhook deliveries for the same PR can race; the constraint makes the
@@ -159,8 +169,14 @@ class FindingRecord(UUIDPrimaryKeyMixin, Base):
     confidence: Mapped[float] = mapped_column(Numeric(4, 3), nullable=False)
     agent_name: Mapped[str] = mapped_column(String(100), nullable=False)
     posted_comment_id: Mapped[str | None] = mapped_column(String(64))
+    # Developer feedback from the run page: accepted or dismissed, when
+    # (`resolved_at`), by whom, and for a dismissal, why (`DismissReason`).
     developer_action: Mapped[DeveloperAction | None] = mapped_column(pg_enum(DeveloperAction))
     resolved_at: Mapped[datetime | None] = mapped_column(TZDateTime)
+    feedback_reason: Mapped[str | None] = mapped_column(String(32))
+    feedback_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
 
     run: Mapped[AnalysisRun] = relationship(back_populates="findings")
 

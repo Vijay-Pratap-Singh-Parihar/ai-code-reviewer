@@ -46,6 +46,9 @@ docker compose up --build
 - API: http://localhost:8000/health/live (process up) and
   http://localhost:8000/health/ready (Postgres and Redis answer; also says whether a worker
   has checked in)
+- Metrics for Prometheus: http://localhost:8000/metrics (requests, queue depth) and
+  http://localhost:9100/metrics (worker: reviews, durations, tokens, cost). Errors go to
+  Sentry when `SENTRY_DSN` is set. See `.env.example`, "Monitoring"
 - Web: http://localhost:3000
 - Postgres: localhost:5434, Redis: localhost:6380 (overridable via `HOST_POSTGRES_PORT` /
   `HOST_REDIS_PORT` in `.env` — defaults avoid colliding with other local Postgres/Redis on
