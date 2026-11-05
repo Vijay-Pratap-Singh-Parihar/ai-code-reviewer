@@ -9,7 +9,12 @@ from api.core import rate_limit
 from api.core.deps import CurrentUser, RedisPool
 from api.core.queue import enqueue
 from api.db.session import get_db
-from api.schemas.analysis import AnalysisRequest, AnalysisRunPublic, FindingPublic
+from api.schemas.analysis import (
+    AnalysisRequest,
+    AnalysisRunPublic,
+    FindingFeedback,
+    FindingPublic,
+)
 from api.services import analysis as analysis_service
 from api.services.providers import NO_REVIEW_MODEL, NoModelRouteError
 from api.services.retry import RetryRefused, retry_run
@@ -93,6 +98,26 @@ async def get_analysis(
     # get_run_for_org eager-loads findings, the PR and its repo, so this is safe.
     pr = run.pull_request
     return _to_public(run, findings=run.findings, pr=pr, repo_full_name=pr.repository.full_name)
+
+
+@router.put("/{run_id}/findings/{finding_id}/feedback", response_model=FindingPublic)
+async def give_feedback(
+    run_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    body: FindingFeedback,
+    user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> FindingPublic:
+    """Record whether a finding was useful. Anyone in the organisation can
+    give feedback; the latest feedback replaces earlier feedback."""
+    run = await analysis_service.get_run_for_org(db, run_id=run_id, org_id=user.org_id)
+    finding = next((f for f in run.findings if f.id == finding_id), None) if run else None
+    if finding is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "finding not found")
+    analysis_service.set_feedback(finding, body=body, user=user)
+    await db.commit()
+    await db.refresh(finding)
+    return FindingPublic.model_validate(finding)
 
 
 @router.post(

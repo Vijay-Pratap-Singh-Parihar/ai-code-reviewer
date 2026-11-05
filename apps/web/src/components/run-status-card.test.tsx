@@ -38,6 +38,7 @@ describe("RunStatusCard", () => {
       error: null,
       findings: [
         {
+          id: "f5",
           file_path: "app.py",
           line_start: 3,
           line_end: 3,

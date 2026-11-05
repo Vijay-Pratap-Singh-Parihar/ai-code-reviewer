@@ -167,7 +167,11 @@ export type EvidenceItem = {
   reason: string;
 };
 
+export type DeveloperAction = "accepted" | "dismissed" | "ignored";
+export type DismissReason = "incorrect" | "not_important" | "already_handled" | "other";
+
 export type FindingPublic = {
+  id: string;
   file_path: string;
   line_start: number;
   line_end: number;
@@ -177,7 +181,22 @@ export type FindingPublic = {
   confidence: number;
   agent_name: string;
   evidence: EvidenceItem[];
+  /** Developer feedback from the run page. */
+  developer_action?: DeveloperAction | null;
+  feedback_reason?: DismissReason | null;
+  feedback_at?: string | null;
 };
+
+export function giveFindingFeedback(
+  runId: string,
+  findingId: string,
+  body: { action: "accepted" | "dismissed" | null; reason?: DismissReason | null },
+): Promise<FindingPublic> {
+  return apiFetchJson<FindingPublic>(`/analysis/${runId}/findings/${findingId}/feedback`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
 
 export type AnalysisRunStatus = "queued" | "running" | "succeeded" | "failed";
 

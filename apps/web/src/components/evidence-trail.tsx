@@ -2,14 +2,16 @@ import type { FindingPublic } from "@/lib/api-client";
 import { SEVERITY_BADGE } from "@/lib/badges";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { FindingFeedback } from "@/components/finding-feedback";
 
 /**
  * One finding plus the real locations the agent cites as evidence for it —
  * which can be files outside the diff entirely (that's the whole point of
  * `cross_file`'s tool calls), so this is rendered independently of the diff
- * viewer rather than only as inline widgets on diff lines.
+ * viewer rather than only as inline widgets on diff lines. With a `runId`,
+ * each finding also takes accept/dismiss feedback.
  */
-export function EvidenceTrail({ findings }: { findings: FindingPublic[] }) {
+export function EvidenceTrail({ findings, runId }: { findings: FindingPublic[]; runId?: string }) {
   if (findings.length === 0) {
     return <p className="text-sm text-muted-foreground">No findings.</p>;
   }
@@ -19,7 +21,7 @@ export function EvidenceTrail({ findings }: { findings: FindingPublic[] }) {
       {findings.map((finding, index) => {
         const severityBadge = SEVERITY_BADGE[finding.severity] ?? SEVERITY_BADGE.low;
         return (
-          <Card key={index}>
+          <Card key={finding.id ?? index}>
             <CardContent className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant={severityBadge.variant} className={severityBadge.className}>
@@ -51,6 +53,8 @@ export function EvidenceTrail({ findings }: { findings: FindingPublic[] }) {
                   </ul>
                 </div>
               )}
+
+              {runId && <FindingFeedback runId={runId} finding={finding} />}
             </CardContent>
           </Card>
         );
