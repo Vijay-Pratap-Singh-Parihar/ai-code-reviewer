@@ -12,6 +12,7 @@ from api.db.session import get_db
 from api.schemas.analysis import (
     AnalysisRequest,
     AnalysisRunPublic,
+    BlastRadius,
     FindingFeedback,
     FindingPublic,
 )
@@ -47,7 +48,18 @@ def _to_public(
         post_error=run.post_error,
         notices=analysis_service.run_notices(run.config_snapshot),
         retry_of=_uuid_or_none(run.config_snapshot.get("retry_of")),
+        blast_radius=_blast_radius_or_none(run.blast_radius),
     )
+
+
+def _blast_radius_or_none(value: dict[str, object] | None) -> BlastRadius | None:
+    # Stored JSON from the worker; an unreadable one is left out, not a 500.
+    if not value:
+        return None
+    try:
+        return BlastRadius.model_validate(value)
+    except ValueError:
+        return None
 
 
 def _uuid_or_none(value: object) -> uuid.UUID | None:

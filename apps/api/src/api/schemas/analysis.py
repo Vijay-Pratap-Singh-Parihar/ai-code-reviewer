@@ -56,6 +56,32 @@ class FindingPublic(BaseModel):
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+class BlastNode(BaseModel):
+    id: int
+    name: str
+    kind: str
+    file_path: str
+    line_start: int
+    line_end: int
+    # 0: changed by the pull request; n: calls a changed symbol n calls away.
+    distance: int
+
+
+class BlastEdge(BaseModel):
+    caller: int
+    callee: int
+
+
+class BlastRadius(BaseModel):
+    depth: int
+    changed: int
+    impacted: int
+    impacted_files: int
+    truncated: bool
+    nodes: list[BlastNode]
+    edges: list[BlastEdge]
+
+
 class AnalysisRunPublic(BaseModel):
     id: uuid.UUID
     status: AnalysisRunStatus
@@ -85,6 +111,8 @@ class AnalysisRunPublic(BaseModel):
     notices: list[str] = Field(default_factory=list)
     # The failed run this one retries, when it is a retry.
     retry_of: uuid.UUID | None = None
+    # What the change can affect (cross-file reviews; None otherwise).
+    blast_radius: BlastRadius | None = None
 
 
 class FindingFeedback(BaseModel):

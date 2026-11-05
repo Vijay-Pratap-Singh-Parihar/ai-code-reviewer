@@ -484,6 +484,8 @@ async def test_cross_file_review_loads_graph_and_runs_through_verifier(
     assert run.tokens_in == 300
     assert run.tokens_out == 100
     assert run.config_snapshot["verification"]["findings_out"] == 1
+    # The blast radius is read off the same graph (empty here, so nothing).
+    assert run.blast_radius is not None and run.blast_radius["changed"] == 0
 
     findings = (
         await worker_db_session.scalars(select(FindingRecord).where(FindingRecord.run_id == run.id))
@@ -824,3 +826,35 @@ async def test_a_queued_review_does_not_start_once_the_budget_is_reached(
     assert not called
     assert run.status == AnalysisRunStatus.FAILED
     assert "monthly budget of $5.00" in (run.error or "")
+
+
+async def test_a_blast_radius_failure_does_not_fail_the_review(
+    worker_db_session: AsyncSession, tenant_storage: TenantStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = await _make_repo(worker_db_session)
+    branch_index = await _make_ready_branch_index(
+        worker_db_session, repo=repo, graph_ref=_graph_ref_in(tenant_storage, repo)
+    )
+    run, _ = await _make_run(
+        worker_db_session, repo=repo, agent="cross_file", branch_index_id=branch_index.id
+    )
+
+    def broken(*args: object, **kwargs: object) -> None:
+        raise ValueError("unexpected graph shape")
+
+    async def fake_review_cross_file(**kwargs: object) -> RunResult:
+        return RunResult(findings=[])
+
+    monkeypatch.setattr(analyze, "load_graph", lambda *a, **k: rx.PyDiGraph())
+    monkeypatch.setattr(analyze, "blast_radius", broken)
+    monkeypatch.setattr(analyze, "review_cross_file", fake_review_cross_file)
+
+    await analyze.execute_review(
+        worker_db_session, run, repo=repo, pr_title="t", pr_body="b", diff="d",
+        agent="cross_file", repo_path="/tmp/acme-widgets", storage=tenant_storage,
+        provider_access=TEST_ACCESS,
+    )
+
+    await worker_db_session.refresh(run)
+    assert run.status == AnalysisRunStatus.SUCCEEDED
+    assert run.blast_radius is None

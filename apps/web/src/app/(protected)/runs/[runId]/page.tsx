@@ -12,6 +12,7 @@ import { STATUS_BADGE } from "@/lib/badges";
 import { Badge } from "@/components/ui/badge";
 import { DiffViewer } from "@/components/diff-viewer";
 import { EvidenceTrail } from "@/components/evidence-trail";
+import { BlastRadiusView } from "@/components/blast-radius";
 
 const POLL_INTERVAL_MS = 1500;
 
@@ -115,6 +116,13 @@ export default function RunPage() {
           </p>
         )}
       </div>
+
+      {data?.blast_radius && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-sm font-semibold text-muted-foreground">Blast radius</h2>
+          <BlastRadiusView radius={data.blast_radius} />
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <h2 className="text-sm font-semibold text-muted-foreground">Findings &amp; evidence trail</h2>
