@@ -6,6 +6,7 @@ import { TriggerAnalysisForm } from "@/components/trigger-analysis-form";
 import { RunStatusCard } from "@/components/run-status-card";
 import { AnalyticsWidgets } from "@/components/analytics-widgets";
 import { RepositoryList } from "@/components/repository-list";
+import { BudgetBanner } from "@/components/usage/budget-status";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export default function DashboardPage() {
@@ -19,6 +20,8 @@ export default function DashboardPage() {
           Review pull requests from your connected GitHub repositories.
         </p>
       </div>
+
+      <BudgetBanner />
 
       <AnalyticsWidgets runIds={runIds} />
 

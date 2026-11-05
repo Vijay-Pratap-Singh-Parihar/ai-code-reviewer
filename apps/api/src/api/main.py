@@ -3,8 +3,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from db.tenancy import rls_bypass_reason
-from fastapi import FastAPI
+from db.usage import BudgetExceededError
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from observability import (
     REQUEST_ID_HEADER,
     configure_logging,
@@ -26,6 +28,7 @@ from api.routers import (
     metrics,
     providers,
     repos,
+    usage,
 )
 
 settings = get_settings()
@@ -75,6 +78,14 @@ app.add_middleware(
     expose_headers=[REQUEST_ID_HEADER],
 )
 app.add_middleware(SecurityHeadersMiddleware, hsts=settings.is_production)
+
+
+@app.exception_handler(BudgetExceededError)
+async def _over_budget(_: Request, exc: BudgetExceededError) -> JSONResponse:
+    # Every path that queues a review checks the budget first (db.usage).
+    return JSONResponse(status_code=status.HTTP_402_PAYMENT_REQUIRED, content={"detail": str(exc)})
+
+
 # Outermost, so the request id covers everything below it, CORS included.
 app.add_middleware(RequestContextMiddleware)
 
@@ -87,3 +98,4 @@ app.include_router(repos.router)
 app.include_router(github.router)
 app.include_router(audit.router)
 app.include_router(providers.router)
+app.include_router(usage.router)

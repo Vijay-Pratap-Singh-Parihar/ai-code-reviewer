@@ -47,6 +47,7 @@ class AuditAction(enum.StrEnum):
     PROVIDER_DELETED = "ai_provider.deleted"
     PROVIDER_TESTED = "ai_provider.tested"
     MODEL_ROUTES_CHANGED = "model_routes.changed"
+    BUDGET_CHANGED = "budget.changed"
 
 
 def record_audit(

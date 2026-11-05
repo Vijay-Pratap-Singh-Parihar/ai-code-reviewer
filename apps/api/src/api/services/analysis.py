@@ -7,6 +7,7 @@ from db.organization import User
 from db.provider import ModelTier
 from db.pull_request import AnalysisRun, AnalysisRunStatus, PullRequest, PullRequestState
 from db.repository import Repository
+from db.usage import ensure_within_budget
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -101,8 +102,10 @@ async def _get_or_create_pull_request(
 async def create_analysis_run(
     session: AsyncSession, *, user: User, body: AnalysisRequest
 ) -> AnalysisRun:
-    # Fails (NoModelRouteError) before anything is written when the
-    # organisation hasn't chosen a review model yet.
+    # Fails before anything is written when the organisation hasn't chosen a
+    # review model yet (NoModelRouteError) or has reached its monthly budget
+    # (BudgetExceededError).
+    await ensure_within_budget(session, user.org_id)
     model = await route_snapshot(session, user.org_id, ModelTier.REVIEW)
     repo = await get_or_create_repository(
         session, org_id=user.org_id, full_name=body.repo_full_name

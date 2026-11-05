@@ -1,7 +1,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String, func
+from sqlalchemy import (
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -12,7 +21,8 @@ from db.mixins import TZDateTime, UUIDPrimaryKeyMixin
 class TokenUsageLedger(UUIDPrimaryKeyMixin, Base):
     """Append-only record of actual token/cost consumption per run, normalised
     across providers. This is what the Usage and Budget screen sums, not the
-    pre-flight estimate.
+    pre-flight estimate. One row per finished run, written by the worker in
+    the same commit that marks the run succeeded (`db.usage.record_run_usage`).
     """
 
     __tablename__ = "token_usage_ledger"
@@ -23,6 +33,8 @@ class TokenUsageLedger(UUIDPrimaryKeyMixin, Base):
             ondelete="CASCADE",
             name="fk_token_usage_ledger_run_org",
         ),
+        UniqueConstraint("run_id", name="uq_token_usage_ledger_run"),
+        Index("ix_token_usage_ledger_org_occurred", "org_id", "occurred_at"),
     )
 
     org_id: Mapped[uuid.UUID] = mapped_column(

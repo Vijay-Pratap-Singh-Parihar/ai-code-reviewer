@@ -57,7 +57,7 @@ describe("AppSidebar", () => {
     pathname = "/dashboard";
     renderSidebar();
 
-    for (const label of ["Branch Memory", "Usage & Budget", "History"]) {
+    for (const label of ["Branch Memory", "History"]) {
       const button = screen.getByRole("button", { name: new RegExp(label) });
       // The tooltip wrapper needs the button to still fire hover events, so
       // "disabled" here renders as a data-trigger-disabled marker (styled
@@ -65,8 +65,9 @@ describe("AppSidebar", () => {
       // attribute.
       expect(button).toHaveAttribute("data-trigger-disabled");
     }
-    expect(screen.getAllByText("Soon")).toHaveLength(3);
+    expect(screen.getAllByText("Soon")).toHaveLength(2);
     expect(screen.getByRole("link", { name: /ai providers/i })).toHaveAttribute("href", "/providers");
+    expect(screen.getByRole("link", { name: /usage & budget/i })).toHaveAttribute("href", "/usage");
   });
 
   it("shows the audit log to owners and admins only", () => {

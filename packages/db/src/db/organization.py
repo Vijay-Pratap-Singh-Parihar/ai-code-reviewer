@@ -1,8 +1,9 @@
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, ForeignKey, String, false
+from sqlalchemy import BigInteger, ForeignKey, Numeric, SmallInteger, String, false
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,8 +29,15 @@ class Organization(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     plan: Mapped[OrgPlan] = mapped_column(pg_enum(OrgPlan), default=OrgPlan.FREE, nullable=False)
+    # Monthly caps (see `db.usage`). Spend in US dollars, None = no cap;
+    # tokens, 0 = no cap (local models report no cost, so this is their cap).
+    # The app warns from `budget_warn_percent` of either cap and refuses new
+    # reviews once one is reached.
+    monthly_budget_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     token_quota_monthly: Mapped[int] = mapped_column(default=0, nullable=False)
-    token_used_current_period: Mapped[int] = mapped_column(default=0, nullable=False)
+    budget_warn_percent: Mapped[int] = mapped_column(
+        SmallInteger, default=80, server_default="80", nullable=False
+    )
 
     users: Mapped[list["User"]] = relationship(
         back_populates="organization", cascade="all, delete-orphan"

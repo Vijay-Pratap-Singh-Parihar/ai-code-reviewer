@@ -60,11 +60,11 @@ edges:
   - caller: worker.jobs.analyze.execute_review
     callee: revu.agents.diff_only.review_diff
     file: apps/worker/src/worker/jobs/analyze.py
-    line: 149
+    line: 153
     note: "the worker's shared review core (Stage 10 split it out of analyze_pr) calls the Stage 3 reviewer's review_diff() across the worker/engine package boundary"
 
   - caller: worker.jobs.analyze.execute_review
     callee: db.pull_request.FindingRecord
     file: apps/worker/src/worker/jobs/analyze.py
-    line: 175
+    line: 184
     note: "execute_review() constructs a FindingRecord() row per finding, across the worker/db package boundary"
