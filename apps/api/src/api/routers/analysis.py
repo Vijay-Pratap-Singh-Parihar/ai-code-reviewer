@@ -15,6 +15,7 @@ from api.schemas.analysis import (
     BlastRadius,
     FindingFeedback,
     FindingPublic,
+    RetryRequest,
 )
 from api.services import analysis as analysis_service
 from api.services.providers import NO_REVIEW_MODEL, NoModelRouteError
@@ -49,6 +50,9 @@ def _to_public(
         notices=analysis_service.run_notices(run.config_snapshot),
         retry_of=_uuid_or_none(run.config_snapshot.get("retry_of")),
         blast_radius=_blast_radius_or_none(run.blast_radius),
+        estimated_tokens=run.estimated_tokens,
+        over_ceiling=bool(run.config_snapshot.get("over_ceiling"))
+        and run.status == AnalysisRunStatus.FAILED,
     )
 
 
@@ -171,6 +175,7 @@ async def retry_analysis(
     user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: RedisPool,
+    body: RetryRequest | None = None,
 ) -> AnalysisRunPublic:
     """Queue a new run of a failed review (same pull request, same reviewer,
     the organisation's model as configured now). Answers with the new run;
@@ -181,7 +186,8 @@ async def retry_analysis(
     pr = run.pull_request
     repo_full_name = pr.repository.full_name
     try:
-        retry = await retry_run(db, redis, run=run, user=user)
+        override = bool(body and body.allow_over_ceiling)
+        retry = await retry_run(db, redis, run=run, user=user, allow_over_ceiling=override)
     except RetryRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except NoModelRouteError as exc:

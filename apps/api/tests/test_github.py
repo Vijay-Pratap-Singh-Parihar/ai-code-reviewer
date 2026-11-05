@@ -983,3 +983,50 @@ async def test_installations_report_and_track_the_permission_to_post_reviews(
 
     assert before[0]["can_post_reviews"] is False
     assert after[0]["can_post_reviews"] is True
+
+
+async def test_admins_set_a_repositorys_review_settings(
+    api_client: AsyncClient, fake_github: FakeGitHub
+) -> None:
+    headers = await _signup(api_client, "settings@example.com")
+    await _link(api_client, headers)
+    repo_id = await _repo_id(api_client, headers, "acme/widgets")
+    listed = (await api_client.get("/repos", headers=headers)).json()
+    assert listed[0]["review_settings"] == {
+        "ignore_globs": [],
+        "min_severity": "low",
+        "max_comments": None,
+        "max_tokens_per_review": None,
+    }
+
+    settings = {
+        "ignore_globs": ["docs/**", " *.snap "],
+        "min_severity": "medium",
+        "max_comments": 10,
+        "max_tokens_per_review": 50000,
+    }
+    updated = await api_client.patch(
+        f"/repos/{repo_id}", json={"review_settings": settings}, headers=headers
+    )
+
+    assert updated.status_code == 200, updated.text
+    body = updated.json()
+    assert body["review_settings"]["ignore_globs"] == ["docs/**", "*.snap"]
+    assert body["review_settings"]["max_tokens_per_review"] == 50000
+    # Changing one setting leaves the other alone.
+    assert body["auto_review_enabled"] is False
+    toggled = await api_client.patch(
+        f"/repos/{repo_id}", json={"auto_review_enabled": True}, headers=headers
+    )
+    assert toggled.json()["review_settings"]["max_comments"] == 10
+
+    bad = await api_client.patch(
+        f"/repos/{repo_id}", json={"review_settings": {"max_comments": 0}}, headers=headers
+    )
+    assert bad.status_code == 422
+    audit = (
+        await api_client.get(
+            "/audit", params={"action": "repository.settings_changed"}, headers=headers
+        )
+    ).json()
+    assert any("review_settings" in e["metadata"] for e in audit["entries"])

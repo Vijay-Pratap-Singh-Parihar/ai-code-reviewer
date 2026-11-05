@@ -78,6 +78,9 @@ export default function RunPage() {
             </span>
             <span>${data.cost_usd.toFixed(4)}</span>
             {data.latency_ms !== null && <span>{data.latency_ms}ms</span>}
+            {data.estimated_tokens ? (
+              <span>estimated {data.estimated_tokens.toLocaleString("en-US")} tokens before review</span>
+            ) : null}
           </div>
         )}
         {data?.error && <p className="text-sm text-destructive">{data.error}</p>}

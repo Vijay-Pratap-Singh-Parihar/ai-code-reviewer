@@ -4,6 +4,7 @@ from typing import Any, Literal
 
 from db.pull_request import AnalysisRunStatus
 from pydantic import BaseModel, Field
+from revu.review_settings import ReviewSettings
 
 
 class GitHubAppInfo(BaseModel):
@@ -83,10 +84,14 @@ class RepositoryPublic(BaseModel):
     disconnected_at: datetime | None = None
     # When the retention job deletes this repository's data, if disconnected.
     purge_after: datetime | None = None
+    review_settings: ReviewSettings = Field(default_factory=ReviewSettings)
 
 
 class RepositoryUpdate(BaseModel):
-    auto_review_enabled: bool
+    """Change either or both; a field left out is left as it is."""
+
+    auto_review_enabled: bool | None = None
+    review_settings: ReviewSettings | None = None
 
 
 class LatestRunPublic(BaseModel):

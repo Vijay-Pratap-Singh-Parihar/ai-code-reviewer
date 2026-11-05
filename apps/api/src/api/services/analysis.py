@@ -55,6 +55,28 @@ def run_notices(snapshot: dict[str, Any]) -> list[str]:
         more = f" and {len(skipped) - _SHOWN_SKIPPED} more" if len(skipped) > _SHOWN_SKIPPED else ""
         noun = "file" if len(skipped) == 1 else "files"
         notices.append(f"Left out {len(skipped)} lockfile or generated {noun}: {names}{more}.")
+    ignored = [str(p) for p in snapshot.get("ignored_files") or []]
+    if ignored:
+        names = ", ".join(ignored[:_SHOWN_SKIPPED])
+        more = f" and {len(ignored) - _SHOWN_SKIPPED} more" if len(ignored) > _SHOWN_SKIPPED else ""
+        noun = "file" if len(ignored) == 1 else "files"
+        notices.append(
+            f"Left out {len(ignored)} {noun} matching the repository's ignore patterns: "
+            f"{names}{more}."
+        )
+    below = snapshot.get("hidden_below_threshold")
+    if isinstance(below, int) and below > 0:
+        noun = "finding" if below == 1 else "findings"
+        floor = snapshot.get("min_severity", "low")
+        notices.append(
+            f"{below} {noun} below the repository's minimum severity ({floor}) not shown."
+        )
+    over_cap = snapshot.get("hidden_over_cap")
+    if isinstance(over_cap, int) and over_cap > 0:
+        noun = "finding" if over_cap == 1 else "findings"
+        notices.append(
+            f"{over_cap} lower-priority {noun} left out by the repository's comment limit."
+        )
     retries = snapshot.get("retries")
     if isinstance(retries, int) and retries > 0:
         times = "once" if retries == 1 else f"{retries} times"

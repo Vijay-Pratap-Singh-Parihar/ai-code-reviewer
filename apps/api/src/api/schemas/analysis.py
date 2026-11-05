@@ -111,6 +111,11 @@ class AnalysisRunPublic(BaseModel):
     notices: list[str] = Field(default_factory=list)
     # The failed run this one retries, when it is a retry.
     retry_of: uuid.UUID | None = None
+    # Tokens estimated before the model was called (None for older runs).
+    estimated_tokens: int | None = None
+    # Stopped before any model call: the estimate was over the repository's
+    # token ceiling. A retry with `allow_over_ceiling` runs it anyway.
+    over_ceiling: bool = False
     # What the change can affect (cross-file reviews; None otherwise).
     blast_radius: BlastRadius | None = None
 
@@ -123,3 +128,12 @@ class FindingFeedback(BaseModel):
 
     action: Literal["accepted", "dismissed"] | None
     reason: DismissReason | None = None
+
+
+class RetryRequest(BaseModel):
+    """`allow_over_ceiling`: run it even though its estimate is over the
+    repository's token ceiling ("Run anyway")."""
+
+    model_config = {"extra": "forbid"}
+
+    allow_over_ceiling: bool = False

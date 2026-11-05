@@ -357,12 +357,15 @@ async def queue_github_review(
     actor_id: uuid.UUID | None = None,
     repo_full_name: str = "",
     retry_of: uuid.UUID | None = None,
+    allow_over_ceiling: bool = False,
 ) -> AnalysisRun:
     """Raises BudgetExceededError (nothing written) once the organisation's
     monthly cap is reached, and NoModelRouteError without a review model."""
     await ensure_within_budget(session, pr.org_id)
     model = await route_snapshot(session, pr.org_id, ModelTier.REVIEW)
-    extra = {"retry_of": str(retry_of)} if retry_of else {}
+    extra: dict[str, object] = {"retry_of": str(retry_of)} if retry_of else {}
+    if allow_over_ceiling:
+        extra["allow_over_ceiling"] = True
     run = AnalysisRun(
         pr_id=pr.id,
         org_id=pr.org_id,

@@ -248,13 +248,23 @@ export type AnalysisRunPublic = {
   notices?: string[];
   /** The failed run this one retries, when it is a retry. */
   retry_of?: string | null;
+  /** Tokens estimated before the model was called. */
+  estimated_tokens?: number | null;
+  /** Stopped before any model call: over the repository's token limit. */
+  over_ceiling?: boolean;
   /** What the change can affect (cross-file reviews only). */
   blast_radius?: BlastRadius | null;
 };
 
 /** Run a failed review again as a new run; answers with the new run. */
-export function retryAnalysis(runId: string): Promise<AnalysisRunPublic> {
-  return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}/retry`, { method: "POST" });
+export function retryAnalysis(
+  runId: string,
+  options: { allow_over_ceiling?: boolean } = {},
+): Promise<AnalysisRunPublic> {
+  return apiFetchJson<AnalysisRunPublic>(`/analysis/${runId}/retry`, {
+    method: "POST",
+    body: JSON.stringify(options),
+  });
 }
 
 /** Queue posting a finished PR review to GitHub; a no-op once it is posted. */
@@ -387,6 +397,7 @@ export type RepositoryPublic = {
   disconnected_at?: string | null;
   // When the retention job deletes this repository's data, if disconnected.
   purge_after?: string | null;
+  review_settings?: ReviewSettings;
 };
 
 export type PullRequestSummary = {
@@ -461,9 +472,20 @@ export function listAuditEntries(params: {
   return apiFetchJson<AuditPage>(`/audit${suffix}`);
 }
 
+export type ReviewSettings = {
+  /** Files matching any pattern are left out of reviews (e.g. "docs/**", "*.snap"). */
+  ignore_globs: string[];
+  /** Findings below this severity are not shown or posted. */
+  min_severity: "low" | "medium" | "high" | "critical";
+  /** At most this many findings per review; null: no limit. */
+  max_comments: number | null;
+  /** Reviews estimated above this many tokens stop and ask first; null: no limit. */
+  max_tokens_per_review: number | null;
+};
+
 export function updateRepository(
   repoId: string,
-  body: { auto_review_enabled: boolean },
+  body: { auto_review_enabled?: boolean; review_settings?: ReviewSettings },
 ): Promise<RepositoryPublic> {
   return apiFetchJson<RepositoryPublic>(`/repos/${repoId}`, {
     method: "PATCH",

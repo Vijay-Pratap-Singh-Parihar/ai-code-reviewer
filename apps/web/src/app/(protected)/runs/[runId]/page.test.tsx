@@ -54,8 +54,25 @@ describe("RunPage", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /run review again/i }));
 
-    expect(retryAnalysis).toHaveBeenCalledWith("run-1");
+    expect(retryAnalysis).toHaveBeenCalledWith("run-1", {});
     expect(push).toHaveBeenCalledWith("/runs/run-2");
+  });
+
+  it("offers 'Run anyway' for a review stopped at the repository's token limit", async () => {
+    vi.mocked(getAnalysisRun).mockResolvedValue({
+      ...BASE_RUN,
+      status: "failed",
+      error: "This review would use about 90,000 tokens, over this repository's limit of 50,000 per review.",
+      over_ceiling: true,
+      estimated_tokens: 90000,
+    });
+    vi.mocked(retryAnalysis).mockResolvedValue({ ...BASE_RUN, id: "run-2", status: "queued", retry_of: "run-1" });
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /run anyway/i }));
+
+    expect(retryAnalysis).toHaveBeenCalledWith("run-1", { allow_over_ceiling: true });
+    expect(screen.getByText("estimated 90,000 tokens before review")).toBeInTheDocument();
   });
 
   it("has no retry button on a review that succeeded, and links a retry to its failure", async () => {

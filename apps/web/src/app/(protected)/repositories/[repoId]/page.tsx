@@ -7,11 +7,15 @@ import { useRepositories } from "@/components/repository-list";
 import { AutoReviewToggle } from "@/components/auto-review-toggle";
 import { BranchIndexCard, useBranchIndexStatus } from "@/components/branch-index-card";
 import { PullRequestList } from "@/components/pull-request-list";
+import { ReviewSettingsForm } from "@/components/review-settings-form";
+import { useAuth } from "@/components/auth-provider";
+import { isOrgAdmin } from "@/lib/permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { RepositoryPublic } from "@/lib/api-client";
 
 function RepositoryDetail({ repo }: { repo: RepositoryPublic }) {
   const index = useBranchIndexStatus(repo);
+  const { user } = useAuth();
   return (
     <>
       <div className="flex flex-col gap-1">
@@ -50,6 +54,15 @@ function RepositoryDetail({ repo }: { repo: RepositoryPublic }) {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Review settings</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ReviewSettingsForm key={JSON.stringify(repo.review_settings)} repo={repo} canEdit={isOrgAdmin(user)} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
